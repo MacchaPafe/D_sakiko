@@ -2764,7 +2764,7 @@ class ChatGUI(QWidget):
             )
         warning_lines = self._summarize_chat_backup_warnings(result.warnings)
         if missing_role_count:
-            warning_lines.append(f"角色缺失：{missing_role_count} 条对话暂时无法打开。")
+            warning_lines.append(f"角色缺失：{missing_role_count} 条对话可阅读和播放已有录音。")
         if warning_lines:
             QMessageBox.warning(self, "导入完成，但有内容未恢复", "\n".join([*lines, *warning_lines]))
         else:
@@ -2789,7 +2789,7 @@ class ChatGUI(QWidget):
     @staticmethod
     def _chat_backup_save_file_filter() -> str:
         """返回对话备份包保存文件筛选器。"""
-        return "D_sakiko 共同对话包 (*.dsakiko.json);;旧版 Zip 备份 (*.zip)"
+        return "D_sakiko 对话归档 (*.dsakiko-chat.zip *.zip)"
 
     @staticmethod
     def _chat_backup_open_file_filter() -> str:
@@ -2801,18 +2801,18 @@ class ChatGUI(QWidget):
         """确保导出路径带有对话备份包扩展名。"""
         if output_path.endswith((".dsakiko.json", ".json", ".zip")):
             return output_path
-        return f"{output_path}.dsakiko.json"
+        return f"{output_path}.dsakiko-chat.zip"
 
     @classmethod
     def _default_single_chat_backup_filename(cls, chat: Chat) -> str:
         """生成单条对话导出的默认文件名。"""
         safe_name = cls._safe_backup_filename_part(chat.name.strip() or "未命名对话")
-        return f"{safe_name}_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko.json"
+        return f"{safe_name}_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko-chat.zip"
 
     @staticmethod
     def _default_multi_chat_backup_filename() -> str:
         """生成多条对话导出的默认文件名。"""
-        return f"D_sakiko_对话备份_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko.json"
+        return f"D_sakiko_对话备份_{time.strftime('%Y%m%d-%H%M%S')}.dsakiko-chat.zip"
 
     @staticmethod
     def _safe_backup_filename_part(text: str) -> str:
@@ -3150,7 +3150,8 @@ class ChatGUI(QWidget):
         if chat is None:
             return
         if self.character_by_name.get(chat.get_character_name() or "") is None:
-            QMessageBox.information(self, "角色缺失", "对话对应的角色已经被删除，无法加载。")
+            from ui_qt.components.archive_reader import show_archive_reader
+            show_archive_reader(self, chat)
             return
 
         self.current_chat_id = chat.chat_id

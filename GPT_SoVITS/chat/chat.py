@@ -1083,8 +1083,17 @@ class Chat:
         truncate_after = self.message_list[start - 1].id if start > 0 and end == len(self.message_list) else ""
         deleted_user_count = sum(1 for message in deleted_messages if message.character_name == "User")
         deleted_character_count = len(deleted_messages) - deleted_user_count
-        del self.message_list[start:end]
+        through_turn = None
         if truncate_after:
+            entries = self._timeline.entries()
+            if entries[start - 1][0] is not entries[start][0]:
+                through_turn = entries[start - 1][0]
+        del self.message_list[start:end]
+        if through_turn is not None:
+            # 轮末的工具结果、摘要和推理同属于保留轮次。
+            del self.turns[self.turns.index(through_turn) + 1:]
+            self._timeline.invalidate_entries()
+        elif truncate_after:
             self._timeline.truncate_after(truncate_after)
         self._shift_tool_call_records_after_delete(start, end)
 
@@ -1781,153 +1790,9 @@ class _BackupRestoreResult:
     warnings: list[str]
 
 
-@dataclasses.dataclass
-class _ChatBackupExportContext:
-    """维护一次对话备份包导出过程中的资源映射。"""
-
-    include_audio: bool
-    resources: dict[str, dict[str, dict[str, object]]] = dataclasses.field(
-        default_factory=lambda: {"audio": {}, "attachment": {}}
-    )
-    exported_attachment_count: int = 0
-    exported_audio_count: int = 0
-    warnings: list[str] = dataclasses.field(default_factory=list)
-    _audio_resource_by_path: dict[str, str] = dataclasses.field(default_factory=dict)
-    _attachment_resource_by_path: dict[str, str] = dataclasses.field(default_factory=dict)
-
-    def rewrite_chat_payload_for_export(
-            self,
-            backup_file: zipfile.ZipFile,
-            chat_payload: dict[str, object],
-            chat_name: str,
-    ) -> None:
-        """将 Chat 字典中的本地资源路径改写为备份资源引用。"""
-        if "turns" in chat_payload:
-            temporary = Chat.from_dict(chat_payload)
-            legacy = {"message_list": [message.as_dict() for message in temporary.message_list]}
-            self.rewrite_chat_payload_for_export(backup_file, legacy, chat_name)
-            for index, raw in enumerate(legacy["message_list"]):
-                entry = temporary._timeline.entries()[index][2]
-                temporary._timeline.write_view(str(entry["id"]), raw)
-            temporary._timeline.views.clear()
-            chat_payload.clear()
-            chat_payload.update(temporary.to_dict())
-            return
-        raw_messages = chat_payload.get("message_list")
-        if not isinstance(raw_messages, list):
-            return
-        for message_index, raw_message in enumerate(raw_messages):
-            if not isinstance(raw_message, dict):
-                continue
-            self._rewrite_audio_path(backup_file, raw_message, chat_name, message_index)
-            self._rewrite_attachments(backup_file, raw_message, chat_name, message_index)
-
-    def _rewrite_audio_path(
-            self,
-            backup_file: zipfile.ZipFile,
-            message_payload: dict[object, object],
-            chat_name: str,
-            message_index: int,
-    ) -> None:
-        """将一条消息的音频路径改写为备份资源引用。"""
-        raw_audio_path = message_payload.get("audio_path")
-        if not isinstance(raw_audio_path, str) or not raw_audio_path or raw_audio_path == "NO_AUDIO":
-            return
-        if "silence.wav" in raw_audio_path:
-            return
-        if not self.include_audio:
-            message_payload["audio_path"] = "NO_AUDIO"
-            return
-
-        audio_path = _resolve_runtime_audio_path(raw_audio_path)
-        if audio_path is None:
-            message_payload["audio_path"] = "NO_AUDIO"
-            self.warnings.append(f"对话“{chat_name}”第 {message_index + 1} 条消息的音频文件不存在，已跳过。")
-            return
-
-        resource_id = self._audio_resource_by_path.get(str(audio_path))
-        if resource_id is None:
-            resource_id = self._write_resource_file(
-                backup_file,
-                kind="audio",
-                source_path=audio_path,
-                resource_by_path=self._audio_resource_by_path,
-            )
-            self.exported_audio_count += 1
-        message_payload["audio_path"] = _backup_resource_reference("audio", resource_id)
-
-    def _rewrite_attachments(
-            self,
-            backup_file: zipfile.ZipFile,
-            message_payload: dict[object, object],
-            chat_name: str,
-            message_index: int,
-    ) -> None:
-        """将一条消息的附件路径改写为备份资源引用。"""
-        raw_attachments = message_payload.get("attachments")
-        if not isinstance(raw_attachments, list):
-            return
-
-        from chat.attachments import resolve_attachment_path
-
-        for raw_attachment in raw_attachments:
-            if not isinstance(raw_attachment, dict):
-                continue
-            # 远端 file_id 与服务作用域属于本机缓存，不进入可移植备份。
-            raw_attachment.pop("remote_refs", None)
-            raw_path = raw_attachment.get("path")
-            if not isinstance(raw_path, str) or not raw_path:
-                continue
-            attachment_path = resolve_attachment_path(raw_path)
-            if not attachment_path.exists() or not attachment_path.is_file():
-                self.warnings.append(f"对话“{chat_name}”第 {message_index + 1} 条消息的附件文件不存在，已跳过。")
-                continue
-
-            resource_id = self._attachment_resource_by_path.get(str(attachment_path.resolve()))
-            if resource_id is None:
-                resource_id = self._write_resource_file(
-                    backup_file,
-                    kind="attachment",
-                    source_path=attachment_path.resolve(),
-                    resource_by_path=self._attachment_resource_by_path,
-                )
-                self.exported_attachment_count += 1
-            raw_attachment["path"] = _backup_resource_reference("attachment", resource_id)
-
-    def _write_resource_file(
-            self,
-            backup_file: zipfile.ZipFile,
-            *,
-            kind: Literal["audio", "attachment"],
-            source_path: Path,
-            resource_by_path: dict[str, str],
-    ) -> str:
-        """将本地资源写入备份包，并返回资源标识。"""
-        resource_id = uuid.uuid4().hex
-        filename = _safe_resource_filename(source_path.name, default_name=f"{resource_id}{source_path.suffix}")
-        zip_path = f"resources/{kind}/{resource_id}/{filename}"
-        sha256 = _sha256_file(source_path)
-        backup_file.write(source_path, zip_path)
-        self.resources[kind][resource_id] = {
-            "kind": kind,
-            "zip_path": zip_path,
-            "original_path": str(source_path),
-            "filename": filename,
-            "sha256": sha256,
-            "size": source_path.stat().st_size,
-        }
-        resource_by_path[str(source_path)] = resource_id
-        return resource_id
-
-
 def _now_iso_text() -> str:
     """返回用于存档元数据的当前时间文本。"""
     return datetime.now().isoformat(timespec="seconds")
-
-
-def _backup_resource_reference(kind: Literal["audio", "attachment"], resource_id: str) -> str:
-    """构造备份包资源引用。"""
-    return f"{BACKUP_RESOURCE_PREFIX}{kind}/{resource_id}"
 
 
 def _parse_backup_resource_reference(value: str) -> tuple[str, str] | None:
@@ -2013,6 +1878,8 @@ def _resolve_runtime_audio_path(audio_path: str) -> Path | None:
     if raw_path.is_absolute():
         candidates.append(raw_path)
     else:
+        if raw_path.parts[:2] == ("..", "reference_audio"):
+            candidates.append(_reference_audio_dir().joinpath(*raw_path.parts[2:]))
         candidates.extend([
             Path.cwd() / raw_path,
             _gpt_sovits_dir() / raw_path,
@@ -2034,7 +1901,8 @@ def _load_backup_manifest(backup_file: zipfile.ZipFile) -> dict[str, object]:
     data = json.loads(raw_manifest.decode("utf-8"))
     if not isinstance(data, dict):
         raise ValueError("对话备份包 manifest 格式错误。")
-    if data.get("format") != CHAT_BACKUP_FORMAT:
+    from .portable_zip import FORMAT
+    if data.get("format") not in (CHAT_BACKUP_FORMAT, FORMAT) or data.get("version", 1) != 1:
         raise ValueError("不支持的对话备份包格式。")
     return data
 
@@ -2225,44 +2093,17 @@ class ChatManager:
             selected = [chat for chat in selected if chat is not None]
             result = export_archive([chat.to_dict() for chat in selected], Path(output_path), include_audio=include_audio)
             return ChatBackupExportResult(len(selected), int(result["attachments"]), int(result["audio"]), list(result["warnings"]))
-        export_context = _ChatBackupExportContext(include_audio=include_audio)
-        backup_id = uuid.uuid4().hex
-        exported_at = _now_iso_text()
-        exported_chats: list[dict[str, object]] = []
-
-        with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as backup_file:
-            for chat_id in chat_ids:
-                chat = self.get_chat_by_id(chat_id)
-                if chat is None:
-                    export_context.warnings.append(f"跳过不存在的对话：{chat_id}")
-                    continue
-                chat_payload = copy.deepcopy(chat.to_dict())
-                export_context.rewrite_chat_payload_for_export(backup_file, chat_payload, chat.name)
-                exported_chats.append({
-                    "source_chat_id": chat.chat_id,
-                    "chat": chat_payload,
-                })
-
-            manifest = {
-                "format": CHAT_BACKUP_FORMAT,
-                "version": CHAT_BACKUP_VERSION,
-                "backup_id": backup_id,
-                "exported_at": exported_at,
-                "resources": export_context.resources,
-                "chats": exported_chats,
-                "warnings": list(export_context.warnings),
-            }
-            backup_file.writestr(
-                "manifest.json",
-                json.dumps(manifest, ensure_ascii=False, indent=2),
-            )
-
-        return ChatBackupExportResult(
-            exported_chat_count=len(exported_chats),
-            exported_attachment_count=export_context.exported_attachment_count,
-            exported_audio_count=export_context.exported_audio_count,
-            warnings=list(export_context.warnings),
-        )
+        from .portable_zip import write_zip
+        chats: list[Chat] = []
+        warnings: list[str] = []
+        for identifier in chat_ids:
+            chat = self.get_chat_by_id(identifier)
+            if chat is None:
+                warnings.append(f"跳过不存在的对话：{identifier}")
+            else:
+                chats.append(chat)
+        resources = write_zip(chats, Path(output_path), include_audio, warnings)
+        return ChatBackupExportResult(len(chats), len(resources["attachment"]), len(resources["audio"]), warnings)
 
     def import_chats_from_backup(self, input_path: Union[str, Path]) -> ChatBackupImportResult:
         """从 zip 对话备份包导入对话，并追加到当前管理器末尾。"""
@@ -2283,11 +2124,16 @@ class ChatManager:
         restored_audio_count = 0
         reused_audio_count = 0
 
+        from . import portable_zip
         with zipfile.ZipFile(input_path, "r") as backup_file:
+            if sum(item.file_size for item in backup_file.infolist()) > portable_zip.MAX_BYTES:
+                raise ValueError("解压后的归档超过 512 MiB。")
             manifest = _load_backup_manifest(backup_file)
             resources = _backup_resource_maps(manifest.get("resources"))
             backup_id = str(manifest.get("backup_id") or "")
             exported_at = str(manifest.get("exported_at") or "")
+            portable = manifest["format"] == portable_zip.FORMAT
+            warnings_list.extend(str(item) for item in manifest.get("warnings", []) if isinstance(item, str))
             raw_chats = manifest.get("chats")
             if not isinstance(raw_chats, list):
                 raise ValueError("对话备份包缺少 chats 列表。")
@@ -2303,6 +2149,19 @@ class ChatManager:
                 chat_payload = copy.deepcopy(raw_chat_payload)
                 source_chat_id = str(raw_entry.get("source_chat_id") or chat_payload.get("chat_id") or "")
 
+                copy_id = uuid.uuid4().hex
+                nested = portable and isinstance(raw_entry.get("electron"), dict)
+                if nested:
+                    if self.write_scope is not None and chat_payload.get("type") != self.write_scope.value:
+                        warnings_list.append(f"跳过对话“{chat_payload.get('name', '')}”：请在对应模式导入此类型的会话。")
+                        continue
+                    chat_payload = portable_zip.unpack_timeline(raw_entry)
+                    attachments, restored, reused = portable_zip.restore_files(chat_payload, backup_file, resources, copy_id)
+                    restored_attachment_count += attachments
+                    restored_audio_count += restored
+                    reused_audio_count += reused
+                else:
+                    portable_zip.sanitize_legacy_paths(chat_payload)
                 try:
                     chat = Chat.from_dict(chat_payload)
                 except Exception as exc:
@@ -2312,22 +2171,30 @@ class ChatManager:
                 if self.write_scope is not None and chat.type != self.write_scope:
                     warnings_list.append(f"跳过对话“{chat.name}”：请在对应模式导入此类型的会话。")
                     continue
-                chat.chat_id = uuid.uuid4().hex
-                chat.name = self._unique_chat_name(f"{chat.name}（导入）")
-                restore_result = self._restore_backup_resources_for_chat(backup_file, resources, chat)
-                restored_attachment_count += restore_result.restored_attachment_count
-                restored_audio_count += restore_result.restored_audio_count
-                reused_audio_count += restore_result.reused_audio_count
-                warnings_list.extend(restore_result.warnings)
+                chat.chat_id = copy_id
+                name = chat.name if portable else f"{chat.name}（导入）"
+                taken = {existing.name for existing in self.chat_list + imported_chats}
+                suffix = 2
+                chat.name = name
+                while chat.name in taken:
+                    chat.name = f"{name} {suffix}"
+                    suffix += 1
+                if not nested:
+                    restore_result = self._restore_backup_resources_for_chat(backup_file, resources, chat)
+                    restored_attachment_count += restore_result.restored_attachment_count
+                    restored_audio_count += restore_result.restored_audio_count
+                    reused_audio_count += restore_result.reused_audio_count
+                    warnings_list.extend(restore_result.warnings)
                 chat.meta.extra["import_source"] = {
-                    "format": CHAT_BACKUP_FORMAT,
+                    "format": manifest["format"],
                     "backup_id": backup_id,
                     "source_chat_id": source_chat_id,
                     "exported_at": exported_at,
                     "imported_at": _now_iso_text(),
                 }
-                self.chat_list.append(chat)
                 imported_chats.append(chat)
+
+        self.chat_list.extend(imported_chats)
 
         return ChatBackupImportResult(
             imported_chats=imported_chats,

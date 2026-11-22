@@ -1188,9 +1188,11 @@ class ChatTestCase(unittest.TestCase):
             self.assertTrue(result.warnings)
             with zipfile.ZipFile(backup_path, "r") as backup_file:
                 manifest = json.loads(backup_file.read("manifest.json").decode("utf-8"))
-            exported_attachment_path = Chat.from_dict(manifest["chats"][0]["chat"]).message_list[0].attachments[0].path
-            self.assertEqual(exported_attachment_path, missing_attachment_path)
-            exported_attachment = Chat.from_dict(manifest["chats"][0]["chat"]).message_list[0].attachments[0].as_dict()
+            self.assertNotIn(missing_attachment_path, json.dumps(manifest))
+            exported_attachment = manifest["chats"][0]["chat"]["message_list"][0]["attachments"][0]
+            self.assertEqual(exported_attachment["path"], "")
+            self.assertEqual(exported_attachment["original_name"], "missing.png")
+            self.assertEqual(exported_attachment["availability"], "unavailable")
             self.assertFalse(exported_attachment.get("remote_refs"))
 
     def test_save_preserves_existing_file_when_serialization_fails(self):

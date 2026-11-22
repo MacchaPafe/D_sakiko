@@ -1,4 +1,4 @@
-"""与 Electron 共用的 dsakiko v2 交换包及本机资源定位。"""
+"""兼容旧 dsakiko v2 JSON 交换包，并提供时间线的资源索引。"""
 from __future__ import annotations
 
 import base64
@@ -20,7 +20,8 @@ def resource_kinds(chat: dict[str, object]) -> dict[str, str]:
             for attachment in records(object_dict(message.get("content")).get("attachments")):
                 identifier = object_dict(attachment.get("asset")).get("id")
                 if isinstance(identifier, str):
-                    result[identifier] = "chat-image"
+                    media_type = str(attachment.get("mediaType") or "")
+                    result[identifier] = "chat-image" if media_type.startswith("image/") else "attachment"
             for part in records(message.get("parts")):
                 for line in records(part.get("lines")):
                     identifier = object_dict(object_dict(line.get("audio")).get("asset")).get("id")

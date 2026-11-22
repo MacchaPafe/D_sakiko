@@ -27,10 +27,11 @@ from ui_qt.components.custom_bgm_dialog import (
 
 import time,copy
 import threading
+import zipfile
 import uuid
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
-    QGridLayout, QApplication, QLabel, QGroupBox, QDialog, QMessageBox, QMenu, QFormLayout, QDialogButtonBox, \
+    QFileDialog, QGridLayout, QApplication, QLabel, QGroupBox, QDialog, QMessageBox, QMenu, QFormLayout, QDialogButtonBox, \
     QToolButton, QStyle, QSlider, QListWidget, QListWidgetItem, QInputDialog, QComboBox, QTextEdit, QListView, QStyledItemDelegate, QCheckBox
 
 from PyQt5.QtGui import QCloseEvent, QFontDatabase, QFont, QIcon, QTextCursor, QPalette
@@ -1381,6 +1382,9 @@ class ViewerGUI(QWidget):
         chat_manage_layout = QVBoxLayout()
         chat_manage_layout.addWidget(self.btn_new_chat)
         chat_manage_layout.addWidget(self.btn_delete_chat)
+        import_button = QPushButton("导入对话…")
+        import_button.clicked.connect(self.import_theater_archive)
+        chat_manage_layout.addWidget(import_button)
         chat_manage_layout.addWidget(self.chat_list, 1)
         self.chat_manage_panel.setLayout(chat_manage_layout)
         self.chat_manage_panel.setMinimumWidth(int(self.scr_w * 0.18))
@@ -1568,6 +1572,11 @@ class ViewerGUI(QWidget):
         chat = item.data(Qt.UserRole)
         if chat is None:
             return
+        installed = {character.character_name for character in self.character_list}
+        if not set(self._chat_character_names(chat)).issubset(installed):
+            from ui_qt.components.archive_reader import show_archive_reader
+            show_archive_reader(self, chat)
+            return
         self.switch_chat(chat)
 
     def on_chat_list_order_changed(self) -> None:
@@ -1586,6 +1595,33 @@ class ViewerGUI(QWidget):
         if not self._save_chat():
             return
 
+    def import_theater_archive(self) -> None:
+        """从通用归档或旧 Python 归档中导入小剧场。"""
+        selected, _ = QFileDialog.getOpenFileName(self, "导入小剧场", "", "对话归档 (*.zip *.json)")
+        if not selected:
+            return
+        try:
+            result = self.chat_manager.import_chats_from_backup(selected)
+            if not self._save_chat():
+                return
+            self.refresh_chat_list()
+            QMessageBox.information(self, "导入对话", "\n".join([
+                f"已导入 {result.imported_chat_count} 个小剧场。", *result.warnings,
+            ]))
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
+            QMessageBox.warning(self, "导入失败", str(error))
+
+    def export_theater_archive(self, chat: Chat) -> None:
+        """保存选择的小剧场及其历史语音。"""
+        selected, _ = QFileDialog.getSaveFileName(self, "导出小剧场", "小剧场.dsakiko-chat.zip", "对话归档 (*.zip)")
+        if not selected:
+            return
+        try:
+            result = self.chat_manager.export_chats_to_backup([chat.chat_id], selected)
+            QMessageBox.information(self, "导出对话", "\n".join(["已导出小剧场。", *result.warnings]))
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "导出失败", str(error))
+
     def show_chat_list_menu(self, pos) -> None:
         """
         在对话列表项上右键时显示菜单，复制仅在正式演出空闲时允许。
@@ -1595,6 +1631,7 @@ class ViewerGUI(QWidget):
             return
 
         menu = QMenu(self)
+        export_action = menu.addAction("导出此对话…")
         rename_action = menu.addAction("重命名")
         clone_action = menu.addAction("复制剧本")
         clone_action.setEnabled(self.playback_available())
@@ -1602,7 +1639,9 @@ class ViewerGUI(QWidget):
         fit_menu_to_contents(menu)
         selected_action = menu.exec_(self.chat_list.mapToGlobal(pos))
 
-        if selected_action == rename_action:
+        if selected_action == export_action:
+            self.export_theater_archive(item.data(Qt.UserRole))
+        elif selected_action == rename_action:
             self.rename_chat(item)
         elif selected_action == clone_action:
             self.clone_theater_chat(item.data(Qt.UserRole))
@@ -3153,6 +3192,7 @@ class ViewerGUI(QWidget):
         new_data = dialog.get_new_data()
         # 台词编辑保留原编排；正常无声只在演出编辑器保存时清理越界。
         self.current_chat.message_list[index] = self._message_from_turn_dict(new_data)
+        self._save_chat()
         self.refresh_chat_display()
         self.refresh_chat_list()
 

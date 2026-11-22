@@ -332,18 +332,25 @@ class Timeline:
                           if key not in {"text", "translation", "emotion", "performance", "character_name", "attachments", "audio_path"}})
             extensions["python"] = extra
             if message.get("kind") == "user":
+                if object_dict(message.get("source")).get("kind") in ("async", "reminder") and "content" not in message:
+                    return
                 attachments = []
                 previous_content = object_dict(message.get("content"))
                 previous_attachments = records(previous_content.get("attachments"))
                 for index, attachment in enumerate(records(raw.get("attachments"))):
                     previous = copy.deepcopy(previous_attachments[index]) if index < len(previous_attachments) else {}
-                    previous.update(asset=self.asset(str(attachment.get("path", ""))),
+                    path = str(attachment.get("path", ""))
+                    ref = previous.get("asset")
+                    if self.path(ref) != path:
+                        ref = self.asset(path)
+                    previous.update(asset=ref,
                                     name=attachment.get("original_name", ""), mediaType=attachment.get("mime_type", ""))
                     attachment_extensions = cast(dict[str, object], previous.setdefault("extensions", {}))
                     attachment_extensions["python"] = copy.deepcopy(attachment)
                     attachments.append(previous)
                 content = {**previous_content, "text": raw.get("text", ""), "attachments": attachments}
-                if message.get("content") and message["content"] != content:
+                if previous_content and (previous_content.get("text") != content["text"] or
+                        [item.get("asset") for item in previous_attachments] != [item["asset"] for item in attachments]):
                     self.invalidate_from(identifier)
                 message["content"] = content
                 return
@@ -364,11 +371,11 @@ class Timeline:
                 self.invalidate_from(identifier)
             audio_path = str(raw.get("audio_path") or "")
             if audio_path:
-                ref = self.asset(audio_path)
+                previous_audio = object_dict(entry.get("audio"))
+                same_audio = self.path(previous_audio.get("asset")) == audio_path
+                ref = previous_audio.get("asset") if same_audio else self.asset(audio_path)
                 if ref:
                     extensions.pop("noAudio", None)
-                    previous_audio = object_dict(entry.get("audio"))
-                    same_audio = self.path(previous_audio.get("asset")) == audio_path
                     duration = previous_audio.get("durationMs", 0) if same_audio else 0
                     if not same_audio:
                         spoken["text"] = entry["text"]
@@ -382,7 +389,7 @@ class Timeline:
                                 duration = round(1000 * information.duration)
                             except (ImportError, OSError, RuntimeError, ValueError):
                                 extensions["audioDurationUnknown"] = True
-                    entry["audio"] = {"asset": ref, "durationMs": duration}
+                    entry["audio"] = {**previous_audio, "asset": ref, "durationMs": duration}
                 elif audio_path == "NO_AUDIO":
                     entry["audio"] = None
                     extensions["noAudio"] = True
@@ -403,7 +410,9 @@ class Timeline:
             attachments = []
             for attachment in records(content.get("attachments")):
                 old = copy.deepcopy(object_dict(object_dict(attachment.get("extensions")).get("python")))
-                old.update(type="image", path=self.path(attachment.get("asset")),
+                media_type = str(attachment.get("mediaType") or "")
+                old.update(type=old.get("type") or ("image" if media_type.startswith("image/") else "file"),
+                           path=self.path(attachment.get("asset")),
                            mime_type=attachment.get("mediaType", ""), original_name=attachment.get("name", ""))
                 attachments.append(old)
             raw["attachments"] = attachments
