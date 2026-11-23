@@ -281,22 +281,23 @@ class Timeline:
         self._entries_cache = None
         self._entry_index = {}
 
-    def character_id(self, name: str) -> str:
+    def character_id(self, name: str, identifier: str = "") -> str:
         """优先使用实际目录身份；无法解析时保留明确的缺失身份。"""
         names = cast(dict[str, object], python_meta(self.data).setdefault("characterNames", {}))
-        for identifier, label in names.items():
-            if label == name:
-                return identifier
-        identifier = "missing-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
-        try:
-            from character import GetCharacterAttributes
-            for character in GetCharacterAttributes().character_class_list:
-                if character.character_name == name:
-                    identifier = character.character_folder_name
-                    break
-        except (ImportError, AttributeError, OSError, ValueError):
-            pass
-        names[identifier] = name
+        if not identifier:
+            for existing, label in names.items():
+                if label == name:
+                    return existing
+            identifier = "missing-" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:16]
+            try:
+                from character import GetCharacterAttributes
+                for character in GetCharacterAttributes().character_class_list:
+                    if character.character_name == name:
+                        identifier = character.character_folder_name
+                        break
+            except (ImportError, AttributeError, OSError, ValueError):
+                pass
+        names.setdefault(identifier, name)
         characters = cast(list[str], self.data.setdefault("characterIds", []))
         if identifier not in characters:
             characters.append(identifier)
@@ -329,7 +330,8 @@ class Timeline:
                 if key not in raw:
                     extra.pop(key, None)
             extra.update({key: copy.deepcopy(value) for key, value in raw.items()
-                          if key not in {"text", "translation", "emotion", "performance", "character_name", "attachments", "audio_path"}})
+                          if key not in {"text", "translation", "emotion", "performance", "character_name",
+                                         "speaker_id", "attachments", "audio_path"}})
             extensions["python"] = extra
             if message.get("kind") == "user":
                 if object_dict(message.get("source")).get("kind") in ("async", "reminder") and "content" not in message:
@@ -358,9 +360,12 @@ class Timeline:
             names = object_dict(python_meta(self.data).get("characterNames"))
             previous_name = str(names.get(str(entry.get("speakerId")), entry.get("speakerId")) or "")
             name = str(raw.get("character_name") or "")
-            if name != previous_name:
-                entry["speakerId"] = self.character_id(name) if name else None
-                self.invalidate_from(identifier)
+            speaker_id = str(raw.get("speaker_id") or "")
+            if name != previous_name or (speaker_id and speaker_id != entry.get("speakerId")):
+                new_speaker = self.character_id(name, speaker_id) if name else None
+                if entry.get("speakerId") != new_speaker:
+                    entry["speakerId"] = new_speaker
+                    self.invalidate_from(identifier)
             entry.update(text=raw.get("text", ""), translation=raw.get("translation") or None,
                          emotion=raw.get("emotion") or None,
                          performance=copy.deepcopy(raw.get("performance") or {"motion": None, "expression": None}))
@@ -418,6 +423,9 @@ class Timeline:
             raw["attachments"] = attachments
         else:
             names = object_dict(python_meta(self.data).get("characterNames"))
+            speaker_id = entry.get("speakerId")
+            if isinstance(speaker_id, str) and not speaker_id.startswith("missing-"):
+                raw["speaker_id"] = speaker_id
             raw.update(character_name=str(names.get(str(entry.get("speakerId")), entry.get("speakerId")) or ""),
                        text=entry.get("text", ""), translation=entry.get("translation") or "",
                        emotion=entry.get("emotion") or "happiness", performance=copy.deepcopy(entry.get("performance")),
@@ -476,7 +484,9 @@ class Timeline:
             if part is None:
                 part = {"id": new_id(), "kind": "dialogue", "lines": []}
                 cast(list[dict[str, object]], assistant["parts"]).append(part)
-            line: dict[str, object] = {"id": new_id(), "speakerId": self.character_id(str(raw["character_name"])) if raw.get("character_name") else None,
+            line: dict[str, object] = {"id": new_id(), "speakerId": self.character_id(
+                                          str(raw["character_name"]), str(raw.get("speaker_id") or "")
+                                      ) if raw.get("character_name") else None,
                                       "formId": None, "text": raw.get("text", ""), "translation": None,
                                       "emotion": None, "spoken": {"text": raw.get("text", ""), "language": "und", "pronunciationOverrides": []},
                                       "performance": {}, "audio": None, "extensions": {}}

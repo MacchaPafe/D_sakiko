@@ -4,17 +4,23 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from queue import Queue
+from types import MethodType, SimpleNamespace
 from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
-from PyQt5.QtWidgets import QApplication, QWidget
-from PyQt5.QtCore import Qt, QPointF, QMimeData
+from PyQt5.QtWidgets import QApplication, QDialog, QMenu, QPushButton, QSlider, QVBoxLayout, QWidget
+from PyQt5.QtCore import Qt, QPoint, QPointF, QMimeData
 from PyQt5.QtGui import QDropEvent
 from chat.chat import Chat, Message
+from character import CharacterAttributes
+from emotion_enum import EmotionEnum
+from live2d_support.theater_cast import TheaterCast
 from ui_small_theater.multi_char_editor import MultiCharEditor
+from ui_small_theater.multi_char_insert_dialog import CastButtons
+from ui_small_theater.multi_char_message_edit import delete_saved_message, insert_saved_message, save_cast
 from ui_small_theater.multi_char_timeline import MIME
 
 
@@ -64,6 +70,166 @@ def editor(app):
     session.finish()
     owner.close()
     app.processEvents()
+
+
+def test_cast_controls_save_only_contiguous_rows_and_keep_speaker_audio_and_tracks(app):
+    """阵容草稿、即时互换和说话人各自提交，角色事件仍归原身份。"""
+    owner = Owner()
+    owner.setGeometry(350, 100, 400, 500)
+    messages = [Message.from_dict({"character_name": "A", "text": "测试台词", "muted": True,
+                                  "audio_path": "original.wav", "speaker_id": "a"}) for _ in range(4)]
+    chat = Chat(message_list=messages)
+    characters = [SimpleNamespace(character_folder_name=name.lower(), character_name=name, live2d_json=None)
+                  for name in ("A", "B", "C")]
+    roster = TheaterCast(chat, ["A", "B"], characters, "screen")
+    assert roster.add("c", owner._save_chat)
+    messages[3].scene_before = {"cast": ["c", "a"]}
+    session = MultiCharEditor(owner, chat, messages[1], roster.payload(roster.opening)["slots"], roster=roster)
+    owner.performance_editor = session
+    try:
+        session.draft["characters"]["A"]["motions"].append({"at_ms": 1, "resource": {"logical_id": "pose"}})
+        session.cast_buttons.buttons["a"].click()
+        session.cast_buttons.buttons["c"].click()
+        assert not session.cast_swap.isEnabled()
+        assert roster.casts()[1] == ("a", "b")
+        assert session.commit_cast()
+        assert roster.casts() == [("a", "b"), ("c", "b"), ("c", "b"), ("c", "a")]
+        assert session.draft["characters"]["A"]["motions"] and "A" not in session.names
+        session.swap_cast()
+        assert roster.casts() == [("a", "b"), ("b", "c"), ("b", "c"), ("c", "a")]
+        session.receive({"type": "multi_char_transition", "playing": False, "session": session.session_id,
+                         "sequence": session.sequence})
+        assert session.names == ["B", "C"]
+        session.speaker_label.click()
+        drawer = session.resource_window.findChild(QMenu)
+        buttons = drawer.findChildren(QPushButton)
+        assert [button.text() for button in buttons] == ["B", "C"]
+        assert [action.text() for action in drawer.actions() if action.text()] == ["无说话人"]
+        buttons[0].click()
+        assert (session.message.speaker_id, session.message.audio_path, session.message.muted) == (
+            "b", "original.wav", True)
+        from multi_char_main import ViewerGUI
+        renamed = SimpleNamespace(character_folder_name="b", character_name="B 的新名称")
+        assert ViewerGUI._voice_character(SimpleNamespace(character_list=[renamed]), session.message) is renamed
+        assert session.draft["characters"]["A"]["motions"]
+        owner.regenerate_audio.assert_not_called()
+        session.cast_buttons.buttons["b"].click()
+        session.cast_buttons.buttons["c"].click()
+        assert session.commit_cast() and session.view.rows == []
+        assert session.view.row_at(session.view.top) is None
+        session.speaker_label.click()
+        drawer = QApplication.activePopupWidget()
+        assert drawer.objectName() == "multiCharSpeakerMenu"
+        assert [action.text() for action in drawer.actions()] == ["无说话人"]
+        drawer.actions()[0].trigger()
+        assert (session.message.speaker_id, session.message.character_name) == ("", "")
+        assert (session.message.audio_path, session.message.muted) == ("original.wav", True)
+    finally:
+        session.finish()
+        owner.close()
+        app.processEvents()
+
+
+def test_cast_insert_delete_and_save_failure_keep_independent_row_snapshots():
+    """插在段落中间可以接替出场，删除段首和失败保存都保留后续阵容。"""
+    lines = [Message.from_dict({"text": "相同内容"}) for _ in range(4)]
+    lines[-1].scene_before = {"cast": ["c", "a"], "background": "tail.png"}
+    chat = Chat(message_list=lines)
+    characters = [SimpleNamespace(character_folder_name=name.lower(), character_name=name)
+                  for name in ("A", "B", "C")]
+    roster = TheaterCast(chat, ["A", "B"], characters, "screen")
+    before = deepcopy(chat.to_dict())
+    assert not save_cast(roster, 1, ("c", "b"), lambda: False)
+    assert chat.to_dict() == before
+    inserted = Message.from_dict({"text": "新句", "character_name": "C", "speaker_id": "c"})
+    assert insert_saved_message(chat, lines[0], inserted, True, lambda: True,
+                                roster=roster, cast=("c", "b"))
+    assert roster.casts() == [("a", "b"), ("c", "b"), ("c", "b"), ("c", "b"), ("c", "a")]
+    assert delete_saved_message(chat, inserted, lambda: True, roster=roster)
+    assert roster.casts() == [("a", "b"), ("c", "b"), ("c", "b"), ("c", "a")]
+    assert lines[-1].scene_before["background"] == "tail.png"
+
+
+def test_role_context_menu_removes_availability_without_changing_saved_cast(app, monkeypatch):
+    """右键移除只影响名单，已出场角色保留在该句并可重新加入名单。"""
+    message = Message.from_dict({"character_name": "C", "speaker_id": "c", "text": "原台词",
+                                 "scene_before": {"cast": ["c", "b"]}})
+    chat = Chat(message_list=[message])
+    characters = [SimpleNamespace(character_folder_name=name.lower(), character_name=name)
+                  for name in ("A", "B", "C", "D")]
+    roster = TheaterCast(chat, ["A", "B"], characters, "screen")
+    save = Mock(return_value=True)
+    assert roster.add("c", save) and roster.add("d", save)
+    before = deepcopy(message.as_dict())
+    widget = CastButtons(roster, ("c", "b"), save)
+    actions = []
+
+    def choose(menu, _):
+        action = menu.actions()[0]
+        actions.append((action.text(), action.isEnabled()))
+        return action if action.isEnabled() else None
+
+    monkeypatch.setattr(QMenu, "exec_", choose)
+    try:
+        widget.buttons["a"].customContextMenuRequested.emit(QPoint())
+        assert actions[-1] == ("从剧本可用角色中移除", False)
+
+        save.return_value = False
+        widget.buttons["d"].customContextMenuRequested.emit(QPoint())
+        assert actions[-1] == ("从剧本可用角色中移除", True)
+        assert "d" in roster.role_ids() and "d" in widget.buttons
+
+        save.return_value = True
+        widget.buttons["d"].customContextMenuRequested.emit(QPoint())
+        assert "d" not in roster.role_ids() and "d" not in widget.buttons
+        widget.buttons["c"].customContextMenuRequested.emit(QPoint())
+        assert roster.role_ids() == ["a", "b"]
+        assert widget.buttons["c"].isChecked()
+        assert roster.casts() == [("c", "b")] and message.as_dict() == before
+
+        # 「＋」仍能重新加入当前句保留的出场角色。
+        widget.add_button.click()
+        assert actions[-1] == ("C", True)
+        assert roster.role_ids() == ["a", "b", "c"]
+        assert widget.buttons["c"].isChecked() and message.as_dict() == before
+    finally:
+        widget.close()
+        app.processEvents()
+
+
+def test_adding_role_to_full_row_keeps_new_pill_and_plus_visible(app, monkeypatch):
+    """可见角色行已铺满时，追加胶囊后容器应扩展到第二行。"""
+    characters = [SimpleNamespace(character_folder_name=role, character_name=f"Actor {role.upper()}")
+                  for role in ("a", "b", "c", "d", "e")]
+    roster = TheaterCast(Chat(), ["Actor A", "Actor B"], characters, "screen")
+    save = Mock(return_value=True)
+    assert roster.add("c", save) and roster.add("d", save)
+    window = QWidget()
+    layout = QVBoxLayout(window)
+    layout.setContentsMargins(0, 0, 0, 0)
+    widget = CastButtons(roster, roster.opening, save, window)
+    layout.addWidget(widget)
+    window.show()
+    try:
+        app.processEvents()
+        first_row = [*widget.buttons.values(), widget.add_button]
+        width = sum(button.sizeHint().width() for button in first_row)
+        window.setFixedWidth(width + widget.flow._h_spacing * (len(first_row) - 1))
+        app.processEvents()
+        assert widget.add_button.y() == first_row[0].y()
+        original_height = widget.height()
+
+        monkeypatch.setattr(QMenu, "exec_", lambda menu, _: menu.actions()[0])
+        widget.add_button.click()
+        app.processEvents()
+
+        assert widget.height() > original_height
+        for button in (widget.buttons["e"], widget.add_button):
+            assert button.isVisible()
+            assert widget.rect().contains(button.geometry())
+    finally:
+        window.close()
+        app.processEvents()
 
 
 def test_enter_discard_and_window_restore(editor):
@@ -630,6 +796,189 @@ def test_failed_text_save_keeps_editable_draft(editor):
     assert editor.text_editing
     assert editor.original_input.toPlainText() == "未能保存"
     editor.owner.regenerate_audio.assert_not_called()
+
+
+def test_audio_pill_routes_settings_and_regeneration_separately(editor, monkeypatch):
+    """设置区按本句稳定身份打开参考音频窗口，文字区仍执行合成。"""
+    import multi_char_main
+    owner = editor.owner
+    voice = SimpleNamespace(character_folder_name="actor-a", character_name="A 的新名称", is_sakiko=False)
+    owner.character_list = [voice]
+    owner.audio_gen_module = object()
+    owner._voice_character = MethodType(multi_char_main.ViewerGUI._voice_character, owner)
+    owner.configure_sentence_reference_audio = MethodType(
+        multi_char_main.ViewerGUI.configure_sentence_reference_audio, owner
+    )
+    editor.message.set_speaker("A", "actor-a")
+    dialog = Mock()
+    factory = Mock(return_value=dialog)
+    monkeypatch.setattr(multi_char_main, "ChangeReferenceAudioWindow", factory)
+
+    editor.reference_settings_button.click()
+    assert factory.call_args.args[:2] == (voice, owner.audio_gen_module)
+    assert factory.call_args.kwargs["parent"] is editor.resource_window
+    dialog.exec_.assert_called_once_with()
+    owner.regenerate_audio.assert_not_called()
+
+    editor.regenerate_button.click()
+    owner.regenerate_audio.assert_called_once()
+    factory.assert_called_once()
+    assert not editor.reference_settings_button.isEnabled()
+    editor.audio_regenerated(False, "测试结束")
+
+
+def test_emotion_menu_saves_only_current_emotion_and_follows_the_speaker(editor, tmp_path):
+    voice = CharacterAttributes()
+    voice.character_folder_name = "a"
+    reference = tmp_path / "default.wav"
+    reference.touch()
+    voice.gptsovits_ref_audio = {"happiness": str(reference)}
+    voice.gptsovits_ref_audio_text = {"happiness": "参考文本"}
+    sakiko = CharacterAttributes()
+    sakiko.character_folder_name = "sakiko"
+    editor.owner._voice_character = lambda message: {"a": voice, "sakiko": sakiko}.get(message.speaker_id)
+    message = editor.message
+    message.set_speaker("A", "a")
+    message.audio_path = "original.wav"
+    message.muted = True
+    saved_timeline = deepcopy(message.performance_timeline)
+    draft = deepcopy(editor.draft)
+    editor.update_audio_actions()
+    assert not editor.emotion_button.icon().isNull()
+    editor.emotion_button.click()
+    menu = QApplication.activePopupWidget()
+    actions = menu.actions()
+    assert len(actions) == 7 and actions[0].text() == "开心" and actions[0].isChecked()
+    assert actions[2].text() == "生气（沿用默认）"
+    actions[2].trigger()
+    menu.close()
+    assert message.emotion is EmotionEnum.ANGER and message.as_dict()["emotion"] == "anger"
+    assert editor.emotion_button.text() == "生气"
+    assert (message.audio_path, message.muted) == ("original.wav", True)
+    assert message.performance_timeline == saved_timeline and editor.draft == draft
+    editor.owner.regenerate_audio.assert_not_called()
+
+    editor.owner.fail = True
+    editor.change_emotion(message, voice, EmotionEnum.FEAR)
+    assert message.emotion is EmotionEnum.ANGER and editor.emotion_button.text() == "生气"
+    editor.owner.fail = False
+    message.set_speaker("祥子", "sakiko")
+    editor.sync_scene_controls()
+    assert editor.emotion_button.isHidden() and editor.regenerate_button.isEnabled()
+    message.set_speaker("A", "a")
+    editor.sync_scene_controls()
+    assert not editor.emotion_button.isHidden() and editor.emotion_button.text() == "生气"
+    message.set_speaker("", "")
+    editor.sync_scene_controls()
+    assert not editor.regenerate_pill.isEnabled()
+
+
+def test_settings_opens_from_editor_and_follows_saved_cast(app, monkeypatch, tmp_path):
+    import multi_char_main
+    from multi_char_main import ViewerGUI
+
+    owner = Owner()
+    owner_font = owner.font()
+    owner_font.setPixelSize(42)
+    owner.setFont(owner_font)
+    messages = [Message.from_dict({"character_name": "A", "text": "台词", "speaker_id": "a"}) for _ in range(2)]
+    chat = Chat(message_list=messages)
+    characters = [SimpleNamespace(character_folder_name=name.lower(), character_name=name, live2d_json=None)
+                  for name in ("A", "B", "C")]
+    roster = TheaterCast(chat, ["A", "B"], characters, "screen")
+    assert roster.add("c", owner._save_chat)
+    owner.current_chat = chat
+    owner.character_list = characters
+    owner.settings_dialog = None
+    owner.audio_gen_module = SimpleNamespace(speed=1, pause_second=0.5)
+    owner._bgm_volume = 50
+    owner.get_current_l2d_fps = lambda: 60
+    owner.motion_facing_mode_button_text = lambda: "对话朝向：正常"
+    owner.is_motion_facing_mode_available = lambda: False
+    owner._chat_character_names = lambda chat: ["A", "B"]
+    owner.create_mask_menu = lambda: QMenu(owner)
+    owner.switch_l2d_fps = Mock()
+    owner.convert_sakiko_state = Mock()
+    owner.set_bgm = Mock()
+    owner.set_bgm_volume = Mock()
+    owner.play_bgm_btn = QPushButton(owner)
+    owner.bgm_controls_available = lambda: False
+    owner._prepare_live2d_model_for_switch = Mock(return_value=True)
+    owner.message_queue = Queue()
+    for name in ("open_settings_dialog", "_on_settings_dialog_finished", "update_bgm_controls", "theater_cast",
+                 "_on_live2d_model_changed", "_theater_opening_payload"):
+        setattr(owner, name, MethodType(getattr(ViewerGUI, name), owner))
+    config = SimpleNamespace(multi_char_subtitle_mode=SimpleNamespace(value="both"),
+                             multi_char_motion_facing_mode=SimpleNamespace(value="screen"), set=Mock())
+    monkeypatch.setattr(multi_char_main, "d_sakiko_config", config)
+    monkeypatch.setattr(multi_char_main.character, "GetCharacterAttributes",
+                        lambda: SimpleNamespace(character_class_list=characters))
+    owner.open_settings_dialog()
+    main_dialog = owner.settings_dialog
+    main_font_pixels = main_dialog.label_model_move_info.font().pixelSize()
+    main_subtitle_size = main_dialog.subtitle_modes.sizeHint()
+    main_dialog.close()
+    session = MultiCharEditor(owner, chat, messages[0], roster.payload(roster.opening)["slots"], roster=roster)
+    owner.performance_editor = session
+    try:
+        session.settings_button.click()
+        dialog = owner.settings_dialog
+        assert not owner.isEnabled() and dialog.isEnabled() and dialog.isVisible()
+        assert dialog.parentWidget() is session.resource_window
+        assert main_font_pixels == dialog.label_model_move_info.font().pixelSize() == session.resource_window.font().pixelSize()
+        assert main_subtitle_size == dialog.subtitle_modes.sizeHint()
+        session.settings_button.click()
+        assert owner.settings_dialog is dialog
+        assert list(dialog.voice_cards) == ["a", "b"]
+        dialog.voice_cards["b"].findChild(QSlider).setValue(121)
+        assert owner._theater_voice_options["b"]["speed_factor"] == 1.21
+        owner.chat_manager = SimpleNamespace(save=Mock(side_effect=OSError("测试写入失败")))
+        warning = Mock()
+        monkeypatch.setattr(multi_char_main.QMessageBox, "warning", warning)
+        assert not ViewerGUI._save_chat(owner)
+        assert warning.call_args.args[0] is session.resource_window
+
+        path = str(tmp_path / "new.model3.json")
+
+        def model_window(role, apply, *, form):
+            assert role == "a" and form is None
+            child = QDialog()
+            monkeypatch.setattr(child, "exec_", lambda: apply(SimpleNamespace(model_json_path=path, is_default=False)))
+            return child
+
+        monkeypatch.setattr(multi_char_main, "ChangeL2DModelWindow", model_window)
+        session.draft["characters"]["A"]["motions"].append({"at_ms": 1, "resource": {"logical_id": "kept"}})
+        dialog.model_buttons["a"].click()
+        assert chat.meta.live2d_models == {"A": path}
+        assert session.draft["characters"]["A"]["motions"]
+        assert session.preview_opening_slots["slots"][0]["model_json_path"] == path
+        assert str(session.resources["A"].path) == path
+
+        session.show_message(messages[1])
+        session.cast_buttons.buttons["a"].click()
+        session.cast_buttons.buttons["c"].click()
+        assert list(dialog.model_buttons) == ["a", "b"]
+        assert session.commit_cast()
+        assert list(dialog.voice_cards) == ["c", "b"]
+        session.swap_cast()
+        assert list(dialog.model_buttons) == ["b", "c"]
+        assert dialog.voice_cards["b"].findChild(QSlider).value() == 121
+        session.finish_swap()
+        session.cast_buttons.buttons["c"].click()
+        assert session.commit_cast()
+        assert list(dialog.model_buttons) == list(dialog.voice_cards) == ["b"]
+        session.cast_buttons.buttons["b"].click()
+        assert session.commit_cast()
+        assert dialog.live2d_group.isHidden() and dialog.voice_group.isHidden()
+        dialog.subtitle_buttons["translation"].click()
+        assert config.set.call_args.args == (config.multi_char_subtitle_mode, "translation")
+        assert {"type": "set_subtitle_mode", "mode": "translation"} in owner.to_live2d_change_character_queue.queue
+        session.finish()
+        assert owner.settings_dialog is None and not dialog.isVisible()
+    finally:
+        session.finish()
+        owner.close()
+        app.processEvents()
 
 
 def test_synthesis_locks_navigation_and_exit_then_unlocks_on_failure(editor):

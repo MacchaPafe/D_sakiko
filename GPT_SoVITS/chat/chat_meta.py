@@ -67,6 +67,7 @@ class TheaterCharacterMeta:
     talk_style: str = ""
     # 角色之间的互动细节，例如：“爱音称呼素世为 そよりん”
     interaction_details: str = ""
+    character_id: str = ""
 
     @classmethod
     def from_dict(cls, data: object) -> "TheaterCharacterMeta":
@@ -75,6 +76,7 @@ class TheaterCharacterMeta:
         return cls(
             talk_style=_as_str(mapping.get("talk_style")),
             interaction_details=_as_str(mapping.get("interaction_details")),
+            character_id=_as_str(mapping.get("character_id")),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -82,6 +84,7 @@ class TheaterCharacterMeta:
         return {
             "talk_style": self.talk_style,
             "interaction_details": self.interaction_details,
+            **({"character_id": self.character_id} if self.character_id else {}),
         }
 
 
@@ -95,15 +98,20 @@ class TheaterMeta:
     character_1: TheaterCharacterMeta = field(default_factory=TheaterCharacterMeta)
     # 当前小剧场的情景，即背景信息，比如：“放学后，祥子遇到了堵在羽丘门口的素世”
     situation: str = ""
+    extra_character_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: object) -> "TheaterMeta":
         """从字典数据创建小剧场配置。"""
         mapping = _as_mapping(data)
+        extra = mapping.get("extra_character_ids")
         return cls(
             character_0=TheaterCharacterMeta.from_dict(mapping.get("character_0")),
             character_1=TheaterCharacterMeta.from_dict(mapping.get("character_1")),
             situation=_as_str(mapping.get("situation")),
+            extra_character_ids=list(dict.fromkeys(
+                value for value in extra if isinstance(value, str) and value
+            )) if isinstance(extra, list) else [],
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -112,6 +120,7 @@ class TheaterMeta:
             "character_0": self.character_0.to_dict(),
             "character_1": self.character_1.to_dict(),
             "situation": self.situation,
+            **({"extra_character_ids": list(self.extra_character_ids)} if self.extra_character_ids else {}),
         }
 
 

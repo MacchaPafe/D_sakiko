@@ -1,6 +1,16 @@
 # 此文件存储了两种情感表示的相互映射
 from enum import Enum
 
+EMOTION_LABELS_ZH = {
+    "happiness": "开心",
+    "sadness": "难过",
+    "anger": "生气",
+    "disgust": "反感",
+    "like": "喜欢",
+    "surprise": "惊讶",
+    "fear": "害怕",
+}
+
 
 class EmotionEnum(Enum):
     """

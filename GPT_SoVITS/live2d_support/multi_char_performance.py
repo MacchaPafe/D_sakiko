@@ -318,18 +318,18 @@ class MultiCharPerformance:
             name = command.get("character")
             self.resources = {key: value for key, value in self.resources.items() if key[0] != name}
             self.refreshed_names.add(name)
-        elif action in ("stop", "exit", "resource", "scene", "transition"):
+        elif action in ("stop", "exit", "resource", "scene", "transition", "swap"):
             self.music.stop()
             self.playing = False
             self.paused = False
-            if action in ("scene", "transition"):
+            if action in ("scene", "transition", "swap"):
                 # 句前变化只停止调度；留场者的动作和表情继续，入场者由舞台复位。
                 self.cursor = None
             else:
                 self.reset_all()
-            if action in ("stop", "scene", "transition"):
+            if action in ("stop", "scene", "transition", "swap"):
                 self.offset = 0
-            if action in ("scene", "transition"):
+            if action in ("scene", "transition", "swap"):
                 self.offset = int(command.get("position", 0))
             if action == "resource":
                 self.offset = int(command.get("position", self.offset))

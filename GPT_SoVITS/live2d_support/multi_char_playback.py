@@ -233,16 +233,19 @@ class MultiCharPlayback:
 
     def _start(self, index, first=False, skip_transition=False):
         self._hint_due = None
-        if first:
-            self.reset_round()
-            self.stage.new_playback()
-        self._fresh_start = False
-        self.current_index = index
-        self.pending_index = index
         turn = self.messages[index]
         context = turn.get("scene_context") or {}
         messages = context.get("messages") or self.messages
         scene_index = context.get("index", index)
+        if first:
+            self.reset_round()
+            if scene_index > 0 and turn.get("stage_slots"):
+                self.stage.new_playback(restore_opening=False)
+            else:
+                self.stage.new_playback()
+        self._fresh_start = False
+        self.current_index = index
+        self.pending_index = index
         target = self.stage.resolve(messages, scene_index)
         self.phase = "transition"
         bgm = resolve_bgm(messages, scene_index) if first else (turn.get("scene_before") or {}).get("bgm")

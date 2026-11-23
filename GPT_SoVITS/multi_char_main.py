@@ -32,7 +32,7 @@ import uuid
 
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QTextBrowser, QPushButton, QDesktopWidget, QHBoxLayout, \
     QFileDialog, QGridLayout, QApplication, QLabel, QGroupBox, QDialog, QMessageBox, QMenu, QFormLayout, QDialogButtonBox, \
-    QToolButton, QStyle, QSlider, QListWidget, QListWidgetItem, QInputDialog, QComboBox, QTextEdit, QListView, QStyledItemDelegate, QCheckBox
+    QToolButton, QStyle, QSlider, QListWidget, QListWidgetItem, QInputDialog, QComboBox, QTextEdit, QListView, QStyledItemDelegate, QCheckBox, QButtonGroup
 
 from PyQt5.QtGui import QCloseEvent, QFontDatabase, QFont, QIcon, QTextCursor, QPalette
 
@@ -46,8 +46,11 @@ from live2d_support.model_catalog import Live2DModelOption
 from live2d_support.motion_capabilities import get_live2d_motion_capabilities
 from live2d_support.model_normalizer import normalize_live2d_model_for_project
 from live2d_support.runtime_adapter import detect_live2d_runtime_version
+from live2d_support.theater_cast import TheaterCast, theater_opening_names
 from ui_small_theater.multi_char_icons import set_button_icon, delete_message_icon, multi_char_icon
 from ui_small_theater.multi_char_menu import fit_menu_to_contents
+from ui_small_theater.multi_char_mode_bar import SceneModeBar
+from ui_small_theater.multi_char_style import editor_font, mode_bar_stylesheet
 from ui_small_theater.multi_char_playback_highlight import PlaybackHighlight
 from ui_qt.components.change_ref_audio import ChangeReferenceAudioWindow
 from ui_qt.app_icon import application_icon
@@ -733,115 +736,6 @@ class InteractiveChatBrowser(QTextBrowser):
             super().contextMenuEvent(event)
 
 
-class CharacterSelectDialog(QDialog):
-    def __init__(self, character_list, current_indices, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("选择两名角色")
-        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        screen = QDesktopWidget().screenGeometry()
-        scr_w = screen.width()
-        scr_h = screen.height()
-
-        # 保存传入的数据
-        self.character_list = character_list
-
-        # 复制一份当前索引，避免直接修改原数据
-        # self.selected_indices 用来维护当前选中的角色编号（列表）
-        self.selected_indices = current_indices.copy()
-
-        self.buttons = {}  # 存储按钮对象：{index: button}
-
-        # --- 布局初始化 ---
-        layout = QVBoxLayout()
-
-        # 提示标签
-        label = QLabel("点击选择两名角色：")
-        label.setStyleSheet(f"font-size: {int(scr_h * 0.015)}px; font-weight: bold; margin-bottom: 10px;")
-
-        layout.addWidget(label)
-
-        # 角色按钮网格区域
-        grid_layout = QGridLayout()
-        # 设定每行显示几个按钮（比如3个）
-        columns = 3
-
-        for i, char_obj in enumerate(self.character_list):
-            # 获取角色名
-            char_name = char_obj.character_name
-
-            btn = QPushButton(char_name)
-            btn.setCheckable(True)  # 设置为可选中模式
-            btn.setFixedWidth(int(scr_w * 0.06))
-            btn.setFixedHeight(int(scr_h * 0.03))
-
-            # 如果该角色在当前的 selected_indices 里，设为选中状态
-            if i in self.selected_indices:
-                btn.setChecked(True)
-
-            # 连接点击信号 (注意：用 clicked 而不是 toggled，方便处理逻辑)
-            # 使用 lambda 传参 i
-            btn.clicked.connect(lambda checked, idx=i: self.on_btn_clicked(idx, checked))
-
-            self.buttons[i] = btn
-
-            # 计算网格坐标
-            row = i // columns
-            col = i % columns
-            grid_layout.addWidget(btn, row, col)
-
-        layout.addLayout(grid_layout)
-        layout.addStretch()  # 弹簧，把按钮顶上去
-
-        # 底部确定按钮
-        self.btn_confirm = QPushButton("确定切换")
-
-        self.btn_confirm.setFixedHeight(int(scr_h * 0.03))
-        self.btn_confirm.clicked.connect(self.check_and_accept)
-        layout.addWidget(self.btn_confirm)
-
-        self.setLayout(layout)
-
-        # 应用样式 (沿用你之前的蓝白风格)
-        self.setStyleSheet(fluent_css)
-
-    def on_btn_clicked(self, index, is_checked):
-        """核心逻辑：处理按钮点击"""
-        if is_checked:
-            # === 情况A：用户想选中这个角色 ===
-
-            # 如果当前已经选了2个（或更多），需要“踢掉”一个
-            if len(self.selected_indices) >= 2:
-                # 踢掉列表里第0个（也就是最早选进来的那个）
-                removed_index = self.selected_indices.pop(0)
-                # 把对应的按钮视觉状态取消
-                if removed_index in self.buttons:
-                    self.buttons[removed_index].setChecked(False)
-
-            # 把新的加进去
-            self.selected_indices.append(index)
-
-        else:
-            # === 情况B：用户取消选中 ===
-            if index in self.selected_indices:
-                self.selected_indices.remove(index)
-
-    def check_and_accept(self):
-        """点击确定时的校验"""
-        if len(self.selected_indices) != 2:
-            QMessageBox.warning(self, "提示", "需要选择两名角色哦！")
-            return
-
-        # 排序一下，如果你希望索引总是从小到大（可选）
-        # self.selected_indices.sort()
-
-        self.accept()  # 关闭窗口并返回 QDialog.Accepted
-
-    def get_result(self):
-        """外部获取结果的方法"""
-        return self.selected_indices
-
-
-
 class NewTheaterChatDialog(QDialog):
     def __init__(self, character_list, parent=None):
         super().__init__(parent)
@@ -915,48 +809,39 @@ class NewTheaterChatDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, parent, character_names: List[str], screen_geo, audio_gen_module):
-        """构建小剧场角色、渲染及音频设置，并连接主控制台操作。"""
-        super().__init__(parent)
-        self.setWindowTitle("小剧场控制台")
+    def __init__(self, parent, character_names: List[str], screen_geo, audio_gen_module, *, editor=None):
+        """构建主界面和编排器共用的小剧场设置。"""
+        super().__init__(editor.resource_window if editor is not None else parent)
+        self.setObjectName("multiCharSettingsDialog")
+        self.setWindowTitle("小剧场设置")
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        self.audio_gen_module=audio_gen_module
+        font = editor_font(parent)
+        self.setFont(font)
+        font_pixels = font.pixelSize()
+        self.editor = editor
+        self.audio_gen_module = audio_gen_module
         # 当前小剧场使用的角色列表（字符串列表）
         self.character_names = character_names
         # 所有的角色信息
-        self.all_characters = character.GetCharacterAttributes().character_class_list
-        # 1. 动态设置窗口大小 (宽20%，高25%)
+        self.all_characters = character.GetCharacterAttributes().character_class_list if editor is None else ()
         if screen_geo:
             self.resize(int(screen_geo.width() * 0.3), int(screen_geo.height() * 0.35))
-            # 动态计算字体大小
-            base_font_size = max(12, int(screen_geo.height() * 0.01))
-            self.setStyleSheet(f"font-size: {base_font_size}px;")
         else:
             self.resize(400, 300)
 
         # 引用父窗口
         self.parent_gui = parent
 
-        # 应用全局样式
-        self.setStyleSheet(fluent_css)
+        # Qt 样式会重置子控件的继承字体，因此在面板范围内同时指定字号。
+        self.setStyleSheet(fluent_css + "\n"
+                           "QDialog#multiCharSettingsDialog, QDialog#multiCharSettingsDialog QWidget "
+                           f"{{ font-size: {font_pixels}px; }}")
 
         layout = QVBoxLayout()
 
-        # === 分组 1: 角色管理 ===
-        char_group = QGroupBox("角色管理")
-        char_layout = QGridLayout()
-
-        # 按钮高度动态化 (屏幕高度的 4%)
         btn_h = int(screen_geo.height() * 0.04) if screen_geo else 35
-
-        self.btn_change_char = QPushButton("更换角色组合")
-        self.btn_change_char.setMinimumHeight(btn_h)
-
-        char_layout.addWidget(self.btn_change_char, 0, 0, 1, 2)
-        char_group.setLayout(char_layout)
-
-        # === 分组 2: 祥子状态控制 ===
-        sakiko_group = QGroupBox("祥子的状态")
+        self.model_button_height = btn_h
+        self.sakiko_group = QGroupBox("祥子的状态")
         sakiko_layout = QGridLayout()
 
         self.btn_sakiko_state = QPushButton("切换黑/白祥")
@@ -967,29 +852,15 @@ class SettingsDialog(QDialog):
 
         sakiko_layout.addWidget(self.btn_sakiko_state, 0, 0)
         sakiko_layout.addWidget(self.btn_sakiko_model, 0, 1)
-        sakiko_group.setLayout(sakiko_layout)
+        self.sakiko_group.setLayout(sakiko_layout)
+        layout.addWidget(self.sakiko_group)
 
-        layout.addWidget(char_group)
-        layout.addWidget(sakiko_group)
+        self.live2d_group = QGroupBox("Live2D 模型切换")
+        self.model_layout = QHBoxLayout(self.live2d_group)
+        layout.addWidget(self.live2d_group)
 
-        # === 分组 3:角色 live2d 模型切换
-        live2d_group = QGroupBox("Live2D 模型切换")
-        live2d_layout = QHBoxLayout()
-
-        self.btn_character_0_model = QPushButton(character_names[1] if len(character_names) >= 2 else "角色 A 模型")
-        self.btn_character_0_model.setMinimumHeight(btn_h)
-        self.btn_character_1_model = QPushButton(character_names[0] if len(character_names) >= 2 else "角色 B 模型")
-        self.btn_character_1_model.setMinimumHeight(btn_h)
-        self.btn_character_0_model.clicked.connect(lambda: self.change_live2d_model(1))
-        self.btn_character_1_model.clicked.connect(lambda: self.change_live2d_model(0))
-        live2d_layout.addWidget(self.btn_character_0_model)
-        live2d_layout.addWidget(self.btn_character_1_model)
-        live2d_group.setLayout(live2d_layout)
-
-        layout.addWidget(live2d_group)
-
-        live2d_render_group = QGroupBox("Live2D 设置")
-        live2d_render_layout_top=QVBoxLayout()
+        live2d_render_group = QGroupBox("Live2D 设置", self)
+        live2d_render_layout_top = QVBoxLayout(live2d_render_group)
         live2d_render_layout = QHBoxLayout()
         current_fps = self.parent_gui.get_current_l2d_fps() if self.parent_gui else 60
         self.btn_live2d_fps = QPushButton(f"Live2D渲染帧率：{current_fps}")
@@ -1003,93 +874,40 @@ class SettingsDialog(QDialog):
         live2d_render_layout.addWidget(self.btn_motion_facing)
         live2d_render_layout_top.addLayout(live2d_render_layout)
         subtitle_layout = QHBoxLayout()
-        subtitle_layout.addWidget(QLabel("字幕显示"))
-        self.subtitle_mode_combo = QComboBox()
+        subtitle_label = QLabel("字幕显示", live2d_render_group)
+        row_spacing = max(8, round(font_pixels * 0.6))
+        live2d_render_layout_top.setSpacing(row_spacing)
+        subtitle_layout.setSpacing(row_spacing)
+        subtitle_layout.addWidget(subtitle_label)
+        self.subtitle_mode_group = QButtonGroup(self)
+        self.subtitle_modes = SceneModeBar(self.subtitle_mode_group)
+        self.subtitle_modes.setObjectName("multiCharSubtitleModes")
+        self.subtitle_buttons = {}
         for label, mode in (("仅原文", "original"), ("仅翻译", "translation"), ("原文与翻译", "both")):
-            self.subtitle_mode_combo.addItem(label, mode)
-        self.subtitle_mode_combo.setCurrentIndex(self.subtitle_mode_combo.findData(
-            d_sakiko_config.multi_char_subtitle_mode.value))
-        self.subtitle_mode_combo.currentIndexChanged.connect(self.change_subtitle_mode)
-        subtitle_layout.addWidget(self.subtitle_mode_combo, 1)
+            button = QToolButton()
+            button.setObjectName("multiCharSubtitleMode")
+            button.setText(label)
+            button.setCheckable(True)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setProperty("subtitleMode", mode)
+            self.subtitle_mode_group.addButton(button)
+            self.subtitle_buttons[mode] = button
+            self.subtitle_modes.layout().addWidget(button)
+        subtitle_mode = d_sakiko_config.multi_char_subtitle_mode.value
+        self.subtitle_buttons.get(subtitle_mode, self.subtitle_buttons["both"]).setChecked(True)
+        self.subtitle_mode_group.buttonClicked.connect(self.change_subtitle_mode)
+        subtitle_layout.addWidget(self.subtitle_modes)
+        subtitle_layout.addStretch()
         live2d_render_layout_top.addLayout(subtitle_layout)
         live2d_render_layout_top.addWidget(self.label_model_move_info)
-        live2d_render_group.setLayout(live2d_render_layout_top)
         layout.addWidget(live2d_render_group)
 
-        if self.parent_gui is None or not self.parent_gui.is_motion_facing_mode_available():
-            self.btn_motion_facing.hide()
-
-        # 如果当前没有角色，隐藏 live2d 模型切换按钮
-        if len(character_names) < 2:
-            live2d_group.hide()
-            self.btn_character_0_model.hide()
-            self.btn_character_1_model.hide()
-        # 根据当前对话角色动态显示祥子状态控制按钮
-        if "祥子" in self.character_names:
-            sakiko_group.show()
-            self.btn_sakiko_state.show()
-            self.btn_sakiko_model.show()
-        else:
-            sakiko_group.hide()
-            self.btn_sakiko_state.hide()
-            self.btn_sakiko_model.hide()
-
-        audio_talk_speed_group = QGroupBox("语音合成管理")
-        audio_talk_layout = QHBoxLayout(audio_talk_speed_group)
-        # 设置窗口关闭后仍保留角色参数，左右交换及换装不会改变归属。
+        self.voice_group = QGroupBox("语音合成管理")
+        self.voice_layout = QHBoxLayout(self.voice_group)
         if not hasattr(parent, "_theater_voice_options"):
             parent._theater_voice_options = {}
-        self.voice_cards = {}
-        for name in self.character_names:
-            voice_character = next(char for char in self.all_characters if char.character_name == name)
-            options = parent._theater_voice_options.setdefault(
-                voice_character.character_folder_name,
-                {
-                    "speed_factor": self.audio_gen_module.speed,
-                    "fragment_interval": self.audio_gen_module.pause_second,
-                },
-            )
-            card = QGroupBox(name, self)
-            card_layout = QVBoxLayout(card)
-            parameters = (
-                (
-                    "语速", "speed_factor", 60, 140, "",
-                    "调整角色说话的语速，数值越大语速越快。",
-                ),
-                (
-                    "句间停顿时间", "fragment_interval", 10, 80, " s",
-                    "控制一次合成音频中，语气间的停顿时长。",
-                ),
-            )
-            for title, key, minimum, maximum, unit, tooltip in parameters:
-                label = QLabel(card)
-                slider = QSlider(Qt.Horizontal, card)
-                slider.setRange(minimum, maximum)
-                slider.setValue(round(options[key] * 100))
-                label.setText(f"{title}：{slider.value() / 100:.2f}{unit}")
-                label.setToolTip(tooltip)
-                slider.setToolTip(tooltip)
-                # 固定当前角色和参数，避免循环闭包把两张卡片绑定到同一项。
-                slider.valueChanged.connect(
-                    lambda value, target=options, field=key: target.__setitem__(field, value / 100)
-                )
-                slider.valueChanged.connect(
-                    lambda value, target=label, text=title, suffix=unit: target.setText(
-                        f"{text}：{value / 100:.2f}{suffix}"
-                    )
-                )
-                card_layout.addWidget(label)
-                card_layout.addWidget(slider)
-            reference_button = QPushButton("配置参考音频", card)
-            reference_button.clicked.connect(
-                lambda checked=False, char=voice_character: ChangeReferenceAudioWindow(
-                    char, self.audio_gen_module, QDesktopWidget().screenGeometry()
-                ).exec_()
-            )
-            card_layout.addWidget(reference_button)
-            self.voice_cards[name] = card
-            audio_talk_layout.addWidget(card, 1)
-        layout.addWidget(audio_talk_speed_group)
+        self.role_entries = None
+        layout.addWidget(self.voice_group)
 
         more_function_group=QGroupBox("更多高级设置")
         more_function_layout=QVBoxLayout()
@@ -1105,24 +923,131 @@ class SettingsDialog(QDialog):
         bgm_volume_layout=QHBoxLayout()
         self.bgm_volume_label=QLabel(f"BGM音量调节：{self.parent_gui._bgm_volume}")
         self.bgm_volume_slider=QSlider(Qt.Horizontal)
-        self.bgm_volume_slider.valueChanged.connect(self.change_bgm_volume)
         self.bgm_volume_slider.setRange(0,100)
         self.bgm_volume_slider.setValue(self.parent_gui._bgm_volume)
+        self.bgm_volume_slider.valueChanged.connect(self.change_bgm_volume)
         bgm_volume_layout.addWidget(self.bgm_volume_label)
         bgm_volume_layout.addWidget(self.bgm_volume_slider)
         bgm_volume_layout.addWidget(self.btn_set_bgm)
         layout.addLayout(bgm_volume_layout)
 
         self.setLayout(layout)
+        subtitle_style = mode_bar_stylesheet(font_pixels, text_color=THEME_COLOR)
+        self.subtitle_modes.setStyleSheet(subtitle_style)
+        # 白色滑块使用同一套规则，覆盖设置面板继承的通用底色。
+        self.subtitle_modes.highlight.setStyleSheet(subtitle_style)
 
-        # === 绑定信号 ===
-        if self.parent_gui:
-            self.btn_change_char.clicked.connect(self.parent_gui._change_character)
-            self.btn_sakiko_state.clicked.connect(self.parent_gui.convert_sakiko_state)
-            self.btn_sakiko_model.setMenu(self.parent_gui.create_mask_menu())
-            self.btn_live2d_fps.clicked.connect(self.change_l2d_fps)
-            self.btn_set_bgm.clicked.connect(self.parent_gui.set_bgm)
-            self.btn_motion_facing.clicked.connect(self.change_motion_facing_mode)
+        self.btn_sakiko_state.clicked.connect(parent.convert_sakiko_state)
+        self.btn_live2d_fps.clicked.connect(self.change_l2d_fps)
+        self.btn_set_bgm.clicked.connect(parent.set_bgm)
+        self.btn_motion_facing.clicked.connect(self.change_motion_facing_mode)
+        if editor is None:
+            self.btn_sakiko_model.setMenu(parent.create_mask_menu())
+        else:
+            for button in (self.btn_sakiko_state, self.btn_sakiko_model, self.btn_motion_facing, self.btn_set_bgm):
+                button.setEnabled(False)
+                button.setToolTip("退出编排后可调整")
+                button.setStyleSheet("QPushButton:disabled { color: #A6B3C7; }")
+            self.btn_set_bgm.setToolTip("在编排器场景配置中切换 BGM")
+        self.refresh_roles()
+
+    def refresh_roles(self):
+        """根据已保存的舞台阵容更新模型入口和按角色绑定的语音卡。"""
+        editor = self.editor
+        if editor is not None and editor.roster is not None:
+            roster = editor.roster
+            cast = editor.current_cast()
+        elif editor is None and hasattr(self.parent_gui, "theater_cast") and self.parent_gui.current_chat is not None:
+            roster = self.parent_gui.theater_cast(self.parent_gui.current_chat)
+            cast = roster.opening
+        else:
+            roster = None
+        if roster is not None:
+            entries = [(role, roster.label(role), roster.characters.get(role)) for role in cast if role]
+        else:
+            by_name = {char.character_name: char for char in self.all_characters}
+            entries = [(by_name[name].character_folder_name, name, by_name[name])
+                       for name in self.character_names if name in by_name]
+        if entries == self.role_entries:
+            return
+        self.role_entries = entries
+
+        for layout in (self.model_layout, self.voice_layout):
+            while layout.count():
+                widget = layout.takeAt(0).widget()
+                widget.hide()
+                widget.deleteLater()
+        self.model_buttons = {}
+        self.voice_cards = {}
+        for role, name, voice in entries:
+            button = QPushButton(name)
+            button.setMinimumHeight(self.model_button_height)
+            button.setEnabled(voice is not None)
+            if voice is None:
+                button.setToolTip("本机未安装此角色")
+            else:
+                button.clicked.connect(lambda checked=False, target=role, label=name: self.change_live2d_model(target, label))
+                card = self.build_voice_card(name, voice)
+                self.voice_cards[role] = card
+                self.voice_layout.addWidget(card, 1)
+            self.model_buttons[role] = button
+            self.model_layout.addWidget(button)
+        self.live2d_group.setVisible(bool(self.model_buttons))
+        self.voice_group.setVisible(bool(self.voice_cards))
+        self.sakiko_group.setVisible("sakiko" in self.voice_cards)
+        self.refresh_motion_facing_button()
+
+    def build_voice_card(self, name, voice_character):
+        """让同一角色在切句或换位后继续使用当前会话的合成参数。"""
+        options = self.parent_gui._theater_voice_options.setdefault(
+            voice_character.character_folder_name,
+            {
+                "speed_factor": self.audio_gen_module.speed,
+                "fragment_interval": self.audio_gen_module.pause_second,
+            },
+        )
+        card = QGroupBox(name, self)
+        card_layout = QVBoxLayout(card)
+        parameters = (
+            (
+                "语速", "speed_factor", 60, 140, "",
+                "调整角色说话的语速，数值越大语速越快。",
+            ),
+            (
+                "句间停顿时间", "fragment_interval", 10, 80, " s",
+                "控制一次合成音频中，语气间的停顿时长。",
+            ),
+        )
+        for title, key, minimum, maximum, unit, tooltip in parameters:
+            label = QLabel(card)
+            slider = QSlider(Qt.Horizontal, card)
+            slider.setRange(minimum, maximum)
+            slider.setValue(round(options[key] * 100))
+            label.setText(f"{title}：{slider.value() / 100:.2f}{unit}")
+            label.setToolTip(tooltip)
+            slider.setToolTip(tooltip)
+            # 固定当前角色和参数，避免循环闭包把两张卡片绑定到同一项。
+            slider.valueChanged.connect(
+                lambda value, target=options, field=key: target.__setitem__(field, value / 100)
+            )
+            slider.valueChanged.connect(
+                lambda value, target=label, text=title, suffix=unit: target.setText(
+                    f"{text}：{value / 100:.2f}{suffix}"
+                )
+            )
+            card_layout.addWidget(label)
+            card_layout.addWidget(slider)
+        reference_button = QPushButton("配置参考音频", card)
+        reference_button.clicked.connect(lambda: self.configure_reference_audio(voice_character))
+        card_layout.addWidget(reference_button)
+        return card
+
+    def configure_reference_audio(self, voice):
+        dialog = ChangeReferenceAudioWindow(
+            voice, self.audio_gen_module, QWidget.screen(self).availableGeometry(), parent=self,
+        )
+        dialog.exec_()
+        dialog.deleteLater()
 
     def open_global_settings(self) -> None:
         """启动大模型和启动参数配置界面，并关闭小剧场设置窗口。"""
@@ -1146,39 +1071,36 @@ class SettingsDialog(QDialog):
 
     def refresh_motion_facing_button(self) -> None:
         """根据当前模型组合刷新动作朝向按钮的显隐和文案。"""
-        if not self.parent_gui:
-            self.btn_motion_facing.hide()
-            return
         self.btn_motion_facing.setText(self.parent_gui.motion_facing_mode_button_text())
-        self.btn_motion_facing.setVisible(self.parent_gui.is_motion_facing_mode_available())
+        self.btn_motion_facing.setVisible(
+            self.parent_gui.is_motion_facing_mode_available() if self.editor is None else len(self.model_buttons) == 2
+        )
 
-    def change_live2d_model(self, char_index):
-        if len(self.character_names) <= char_index:
-            return  # 安全检查，避免索引越界
-
-        folder_path = ""
-        for one in self.all_characters:
-            if one.character_name == self.character_names[char_index]:
-                folder_path = one.character_folder_name
-                break
-
-        if folder_path != "":
-            dialog = ChangeL2DModelWindow(
-                folder_path,
-                lambda option, chat_id=self.parent_gui.current_chat.chat_id, form=self.parent_gui.current_chat.get_character_form(folder_path): self.parent_gui._on_live2d_model_changed(
-                    char_index, self.character_names[char_index], option, chat_id=chat_id, form=form),
-                form=self.parent_gui.current_chat.get_character_form(folder_path),
-            )
-            dialog.exec()
+    def change_live2d_model(self, role, name):
+        chat = self.editor.chat if self.editor is not None else self.parent_gui.current_chat
+        if chat is None:
+            return
+        form = chat.get_character_form(role)
+        dialog = ChangeL2DModelWindow(
+            role,
+            lambda option: self.parent_gui._on_live2d_model_changed(
+                role, name, option, chat=chat, form=form, editor=self.editor),
+            form=form,
+        )
+        dialog.setParent(self, dialog.windowFlags())
+        dialog.exec_()
+        dialog.deleteLater()
 
     def change_bgm_volume(self):
         value=self.bgm_volume_slider.value()
         self.parent_gui.set_bgm_volume(value)
         self.bgm_volume_label.setText(f"BGM音量调节：{value}")
 
-    def change_subtitle_mode(self, _index):
+    def change_subtitle_mode(self, button):
         """保存显示偏好，并通知舞台立即刷新字幕。"""
-        mode = self.subtitle_mode_combo.currentData()
+        mode = button.property("subtitleMode")
+        if mode == d_sakiko_config.multi_char_subtitle_mode.value:
+            return
         d_sakiko_config.set(d_sakiko_config.multi_char_subtitle_mode, mode)
         if self.parent_gui is not None:
             self.parent_gui.to_live2d_change_character_queue.put({
@@ -1511,8 +1433,8 @@ class ViewerGUI(QWidget):
             self.switch_chat(chats[0])
             return
 
-        char_0 = self.character_list[self.current_char_index[0]].character_name
-        char_1 = self.character_list[self.current_char_index[1]].character_name
+        indices = self.current_char_index if None not in self.current_char_index else [0, 1]
+        char_0, char_1 = (self.character_list[index].character_name for index in indices)
         new_chat = Chat(
             name=f"{char_0}与{char_1}的对话",
             prompt_generator=SmallTheaterPromptGenerator([char_0, char_1]),
@@ -1571,11 +1493,6 @@ class ViewerGUI(QWidget):
         # 从 item 的 UserRole 中获取对应的 chat 对象
         chat = item.data(Qt.UserRole)
         if chat is None:
-            return
-        installed = {character.character_name for character in self.character_list}
-        if not set(self._chat_character_names(chat)).issubset(installed):
-            from ui_qt.components.archive_reader import show_archive_reader
-            show_archive_reader(self, chat)
             return
         self.switch_chat(chat)
 
@@ -1729,6 +1646,11 @@ class ViewerGUI(QWidget):
             message_list=[]
         )
         new_chat.update_theater_meta({"situation": payload["scene"]})
+        theater = new_chat.get_theater_meta()
+        for setting, name in zip((theater.character_0, theater.character_1), payload["characters"]):
+            character = self._find_character_by_name(name)
+            if character is not None:
+                setting.character_id = character.character_folder_name
         self.chat_manager.chat_list.append(new_chat)
         self.switch_chat(new_chat)
         self.refresh_chat_list()
@@ -1778,6 +1700,7 @@ class ViewerGUI(QWidget):
         """恢复完整台词数据，运行时场景上下文不进入消息存档。"""
         return Message.from_dict({
             "character_name": turn_data.get("character_name", ""),
+            "speaker_id": turn_data.get("speaker_id", ""),
             "text": turn_data.get("text", ""),
             "translation": turn_data.get("translation", ""),
             "emotion": turn_data.get("emotion", "normal"),
@@ -1790,34 +1713,8 @@ class ViewerGUI(QWidget):
             "worldbook_snapshot": turn_data.get("worldbook_snapshot"),
         })
 
-    def _character_indices_from_names(self, character_names: List[str]) -> List[int]:
-        """按角色名匹配角色索引，若不足两名则使用当前索引兜底。"""
-        indices = []
-        for name in character_names:
-            for idx, char in enumerate(self.character_list):
-                if char.character_name == name:
-                    indices.append(idx)
-                    break
-            if len(indices) == 2:
-                break
-
-        if len(indices) < 2:
-            for fallback in self.current_char_index:
-                if fallback not in indices:
-                    indices.append(fallback)
-                if len(indices) == 2:
-                    break
-        return indices[:2]
-
     def _chat_character_names(self, chat: Chat) -> List[str]:
-        """优先从 Prompt 配置读取对话角色名，若缺失则回退到消息中提取。"""
-        if isinstance(chat.prompt_generator, SmallTheaterPromptGenerator):
-            names = [name for name in chat.prompt_generator.character_names if name and name != "User"]
-            if len(names) >= 2:
-                return names[:2]
-
-        names = [name for name in chat.involved_characters if name and name != "User"]
-        return names[:2]
+        return theater_opening_names(chat)
 
     def _ensure_current_chat_theater_meta(self) -> TheaterMeta:
         """确保当前对话包含可用的小剧场配置结构。"""
@@ -1844,15 +1741,36 @@ class ViewerGUI(QWidget):
                 return char
         return None
 
-    def _can_generate_audio_for_chat_characters(self, character_names: List[str]) -> bool:
-        """判断当前对话角色是否具备完整可用的语音模型。"""
-        for name in character_names:
-            char = self._find_character_by_name(name)
-            if char is None:
-                return False
-            if not char.has_valid_voice_model():
-                return False
-        return True
+    def theater_cast(self, chat):
+        """为当前剧本提供共用的角色名单和舞台投影。"""
+        return TheaterCast(chat, self._chat_character_names(chat), self.character_list,
+                           str(d_sakiko_config.multi_char_motion_facing_mode.value))
+
+    def _playback_messages(self, chat):
+        """所有点播及合成回放都使用与正式装载相同的阵容投影。"""
+        if hasattr(self, "theater_cast"):
+            return self.theater_cast(chat).messages()
+        return [message.as_dict() for message in chat.message_list]
+
+    def _voice_character(self, message):
+        """稳定说话身份优先。旧消息缺少身份时按原名称解析。"""
+        if getattr(message, "speaker_id", ""):
+            return next((character for character in getattr(self, "character_list", ())
+                         if character.character_folder_name == message.speaker_id), None)
+        return self._find_character_by_name(message.character_name)
+
+    def configure_sentence_reference_audio(self, message, parent):
+        """打开本句说话人的参考音频配置，与重新合成共用角色解析。"""
+        character = self._voice_character(message)
+        if character is None:
+            QMessageBox.information(parent, "无法配置参考音频", "未找到本句说话人。")
+            return
+        screen = QWidget.screen(parent)
+        dialog = ChangeReferenceAudioWindow(
+            character, self.audio_gen_module, screen.availableGeometry(), parent=parent,
+        )
+        dialog.exec_()
+        dialog.deleteLater()
 
     def _default_model_path_from_index(self, char_index: int) -> Optional[str]:
         """根据角色索引获取可选默认 Live2D 模型路径。"""
@@ -1954,39 +1872,44 @@ class ViewerGUI(QWidget):
         2) 当前对话里保存的自定义模型路径
         3) 角色默认模型路径
         """
-        active_indices = indices if indices is not None else self.current_char_index
-        if len(active_indices) < 2:
-            raise ValueError("至少需要两个角色索引来构造 active_slots")
-
         override_paths = override_paths or {}
-        slots: list[dict[str, object]] = []
-        model_paths: list[str] = []
+        if indices is None and self.current_chat is not None and hasattr(self, "theater_cast"):
+            roster = self.theater_cast(self.current_chat)
+            slots = roster.payload(roster.opening)["slots"]
+            for slot, path in override_paths.items():
+                if slot in (0, 1) and roster.opening[slot] in roster.characters:
+                    slots[slot]["model_json_path"] = path
+        else:
+            active_indices = indices if indices is not None else self.current_char_index
+            if len(active_indices) < 2:
+                raise ValueError("至少需要两个角色索引来构造 active_slots")
 
-        for slot in (0, 1):
-            char_index = active_indices[slot]
-            char_name = self._character_name_from_index(char_index)
+            slots: list[dict[str, object]] = []
 
-            # 允许仅覆盖某一个槽位，未覆盖槽位按“对话自定义 -> 默认模型”回退到已有的值
-            model_path: str | None = override_paths.get(slot)
-            if slot not in override_paths and self.current_chat is not None:
-                model_path = self.current_chat.get_custom_live2d_model_meta(char_name)
-            if slot not in override_paths and self.current_chat is None:
-                if self.character_list[char_index].character_folder_name == "sakiko":
-                    from live2d_support.character_forms import default_form_model
-                    model_path = default_form_model("black" if self.sakiko_state else "white")
-                else:
-                    model_path = self._default_model_path_from_index(char_index)
+            for slot in (0, 1):
+                char_index = active_indices[slot]
+                char_name = self._character_name_from_index(char_index)
 
-            slots.append({
-                "slot": slot,
-                "character_name": char_name,
-                "character_folder_name": self.character_list[char_index].character_folder_name,
-                "model_json_path": model_path,
-                "sakiko_state": self.sakiko_state,
-            })
-            if model_path is not None:
-                model_paths.append(model_path)
+                # 允许仅覆盖某一个槽位，未覆盖槽位按“对话自定义 -> 默认模型”回退到已有的值
+                model_path: str | None = override_paths.get(slot)
+                if slot not in override_paths and self.current_chat is not None:
+                    model_path = self.current_chat.get_custom_live2d_model_meta(char_name)
+                if slot not in override_paths and self.current_chat is None:
+                    if self.character_list[char_index].character_folder_name == "sakiko":
+                        from live2d_support.character_forms import default_form_model
+                        model_path = default_form_model("black" if self.sakiko_state else "white")
+                    else:
+                        model_path = self._default_model_path_from_index(char_index)
 
+                slots.append({
+                    "slot": slot,
+                    "character_name": char_name,
+                    "character_folder_name": self.character_list[char_index].character_folder_name,
+                    "model_json_path": model_path,
+                    "sakiko_state": self.sakiko_state,
+                })
+
+        model_paths = [slot["model_json_path"] for slot in slots if slot["model_json_path"]]
         motion_facing_mode = str(d_sakiko_config.multi_char_motion_facing_mode.value)
         if motion_facing_mode == "face_to_face" and not self._model_paths_support_motion_facing(model_paths):
             motion_facing_mode = "screen"
@@ -2005,6 +1928,7 @@ class ViewerGUI(QWidget):
         """刷新当前打开的小剧场设置面板中依赖模型能力的控件。"""
         if self.settings_dialog is None:
             return
+        self.settings_dialog.refresh_roles()
         self.settings_dialog.refresh_motion_facing_button()
 
     def sync_live2d_active_slots(
@@ -2021,6 +1945,7 @@ class ViewerGUI(QWidget):
             preserve_playback=preserve_playback,
             changed_slot=changed_slot,
         )
+        payload["configured_facing"] = str(d_sakiko_config.multi_char_motion_facing_mode.value)
         for slot in payload["slots"]:
             path = slot.get("model_json_path")
             if path:
@@ -2058,14 +1983,25 @@ class ViewerGUI(QWidget):
         messages = [message.as_dict() for message in self.current_chat.message_list] if self.current_chat else []
         payload = {"messages": messages, "preserve_scene": preserve_scene,
                    "blocked_reasons": sorted(self._playback_blocked_reasons)}
+        roster = self.theater_cast(self.current_chat) if self.current_chat and hasattr(self, "theater_cast") else None
+        if roster is not None:
+            payload["messages"] = roster.messages()
+            payload["cast_opening"] = ViewerGUI._theater_opening_payload(self, roster)
         if not preserve_scene and self.current_chat is not None:
-            slots = self._build_active_slots_payload(preserve_playback=True)
+            slots = payload.get("cast_opening") or self._build_active_slots_payload(preserve_playback=True)
             for slot in slots["slots"]:
                 path = slot.get("model_json_path")
                 if path:
                     self._prepare_live2d_model_for_switch(path, "加载小剧场 Live2D 模型")
             payload["slots_payload"] = slots
         self.send_playback_command("load", **payload)
+
+    def _theater_opening_payload(self, roster):
+        opening = roster.payload(roster.opening)
+        paths = [slot["model_json_path"] for slot in opening["slots"] if slot["model_json_path"]]
+        if opening["motion_facing_mode"] == "face_to_face" and not self._model_paths_support_motion_facing(paths):
+            opening["motion_facing_mode"] = "screen"
+        return opening
 
     def set_playback_block(self, reason: str, blocked: bool) -> None:
         """生成或合成期间阻止舞台启动正式播放，换剧本时仍保留占用原因。"""
@@ -2102,7 +2038,7 @@ class ViewerGUI(QWidget):
             return False
         self.send_playback_command(
             "auto_from" if automatic else "single", index=index,
-            messages=[message.as_dict() for message in self.current_chat.message_list],
+            messages=ViewerGUI._playback_messages(self, self.current_chat),
         )
         return True
 
@@ -2152,33 +2088,38 @@ class ViewerGUI(QWidget):
 
     def _on_live2d_model_changed(
         self,
-        char_index: int,
+        role: str,
         character_name: str,
         option: Live2DModelOption,
-        *, chat_id=None, form=None,
+        *, chat: Chat, form=None, editor=None,
     ) -> None:
-        """
-        接收 SettingsDialog 中角色模型更换的回调，并通知 Live2D 模块更新指定角色的模型。
-        随后，将新的模型路径保存到对话信息中。
-        """
-        folder = self.character_list[self.current_char_index[char_index]].character_folder_name
-        if self.current_chat is None or character_name != self.character_list[self.current_char_index[char_index]].character_name or (chat_id is not None and (chat_id != self.current_chat.chat_id or form != self.current_chat.get_character_form(folder))):
+        """按角色保存剧本模型覆盖，再更新当前活动的舞台。"""
+        if chat is not self.current_chat or form != chat.get_character_form(role) or editor is not self.performance_editor:
             self.message_queue.put("对话或形态已变化，请重新打开模型窗口。")
             return
-        from live2d_support.character_forms import explicit_model, set_model_override
-        previous = explicit_model(self.current_chat.meta, character_name, folder, form)
+        roles = editor.current_cast() if editor is not None else [
+            self.character_list[index].character_folder_name if index is not None else None
+            for index in self.current_char_index
+        ]
+        if role not in roles:
+            self.message_queue.put("出场角色已变化，请重新选择模型。")
+            return
+        from live2d_support.character_forms import set_model_override
         model_path = str(option.model_json_path)
         if not self._prepare_live2d_model_for_switch(model_path, "切换小剧场 Live2D 模型"):
             return
-        if self.current_chat is not None:
-            if option.is_default:
-                self.current_chat.clear_custom_live2d_model_meta(character_name)
-            else:
-                self.current_chat.update_custom_live2d_model_meta(character_name, model_path)
-            if not self._save_chat():
-                set_model_override(self.current_chat.meta, character_name, folder, previous, form)
-                return
+        previous_models = dict(chat.meta.live2d_models)
+        previous_forms = copy.deepcopy(chat.meta.live2d_form_models)
+        set_model_override(chat.meta, character_name, role, None if option.is_default else model_path, form)
+        if not self._save_chat():
+            chat.meta.live2d_models = previous_models
+            chat.meta.live2d_form_models = previous_forms
+            return
+        if editor is not None:
+            editor.refresh_model_preview(self._theater_opening_payload(editor.roster))
+            return
         # 设置面板中的“切同角色不同模型”不应中断正在播放的句子
+        char_index = roles.index(role)
         self.sync_live2d_active_slots(
             override_paths={char_index: model_path},
             preserve_playback=True,
@@ -2209,20 +2150,25 @@ class ViewerGUI(QWidget):
         self.sakiko_state = chat.get_character_form() == "black"
         self._ensure_current_chat_theater_meta()
 
-        char_names = self._chat_character_names(chat)
-
-        self.current_char_index = self._character_indices_from_names(char_names)
+        roster = self.theater_cast(chat)
+        indices = {character.character_folder_name: index for index, character in enumerate(self.character_list)}
+        self.current_char_index = [indices.get(role) for role in roster.opening]
         self.refresh_chat_display()
         self.refresh_chat_list()
 
-        self.can_generate_audio_for_current_chat = self._can_generate_audio_for_chat_characters(char_names)
+        self.can_generate_audio_for_current_chat = all(
+            index is not None and self.character_list[index].has_valid_voice_model()
+            for index in self.current_char_index
+        )
         if 'dp_module' in globals():
             setattr(dp_module, "if_generate_audio", self.can_generate_audio_for_current_chat)
 
         self.load_playback_script()
         self._refresh_open_settings_dialog()
         self.set_two_char_names()
-        self.messages_box.setText(f"当前对话：{chat.name}")
+        missing = [roster.label(role) for role in roster.opening if role and role not in roster.characters]
+        note = f"（未安装：{'、'.join(missing)}）" if missing else ""
+        self.messages_box.setText(f"当前对话：{chat.name}{note}")
 
         self.update_script_button_visibility()
 
@@ -2230,29 +2176,33 @@ class ViewerGUI(QWidget):
         self.set_two_char_names()
         self.messages_box.setText(f"当前角色：{self.two_char_names[0]} 和 {self.two_char_names[1]}")
 
-    def open_settings_dialog(self):
-        """打开设置面板"""
-        if getattr(self, "_audio_fill", None) is not None:
+    def open_settings_dialog(self, *, editor=None):
+        """从当前可操作窗口打开设置，同一入口复用一个非模态面板。"""
+        if getattr(self, "_audio_fill", None) is not None or editor is not self.performance_editor:
             return
-        if self.settings_dialog is not None and self.settings_dialog.isVisible():
+        if self.settings_dialog is not None and self.settings_dialog.editor is editor:
+            self.settings_dialog.showNormal()
             self.settings_dialog.raise_()
             self.settings_dialog.activateWindow()
+            self.settings_dialog.refresh_roles()
             self.settings_dialog.refresh_motion_facing_button()
             self.update_bgm_controls()
             return
+        if self.settings_dialog is not None:
+            self.settings_dialog.close()
 
-        if self.current_chat is None:
-            character_names = []
-        else:
-            character_names = self._chat_character_names(self.current_chat)
-        self.settings_dialog = SettingsDialog(self, character_names, self.screen, self.audio_gen_module)
-        self.settings_dialog.finished.connect(self._on_settings_dialog_finished)
-        self.settings_dialog.show()
+        character_names = self._chat_character_names(self.current_chat) if editor is None and self.current_chat else []
+        dialog = SettingsDialog(self, character_names, self.screen, self.audio_gen_module, editor=editor)
+        self.settings_dialog = dialog
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.finished.connect(lambda result: self._on_settings_dialog_finished(dialog))
+        dialog.show()
         self.update_bgm_controls()
 
-    def _on_settings_dialog_finished(self, _result: int) -> None:
+    def _on_settings_dialog_finished(self, dialog: SettingsDialog) -> None:
         """在设置面板关闭后清理窗口引用。"""
-        self.settings_dialog = None
+        if self.settings_dialog is dialog:
+            self.settings_dialog = None
 
     def toggle_bgm(self) -> None:
         """切换背景音乐的播放和暂停状态。"""
@@ -2580,35 +2530,25 @@ class ViewerGUI(QWidget):
         elif was_playing:
             self.bgm_player.play()
 
-    def _change_character(self):
-        dialog = CharacterSelectDialog(self.character_list, self.current_char_index, self)
-        # 显示窗口并等待结果 (exec_ 会阻塞直到窗口关闭)
-        if dialog.exec_() == QDialog.Accepted:
-            #  获取新索引列表
-            new_indices = dialog.get_result()
-            if new_indices != self.current_char_index:
-                self.current_char_index = new_indices
-                self.set_two_char_names()
-                self.messages_box.setText(f"切换角色为：{self.two_char_names[0]} 和 {self.two_char_names[1]} ")
-                if self.current_chat is not None and isinstance(self.current_chat.prompt_generator, SmallTheaterPromptGenerator):
-                    self.current_chat.prompt_generator.character_names = [
-                        self.character_list[self.current_char_index[0]].character_name,
-                        self.character_list[self.current_char_index[1]].character_name,
-                    ]
-                self.load_playback_script()
-                self.display_timer.setSingleShot(True)
-                self.display_timer.start(2500)
-
     def set_two_char_names(self):
-        self.two_char_names = [self.character_list[self.current_char_index[0]].character_name,
-                               self.character_list[self.current_char_index[1]].character_name]
-        if self.character_list[self.current_char_index[0]].character_name == '祥子':
-            self.two_char_names[0] = '祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
-        if self.character_list[self.current_char_index[1]].character_name == '祥子':
-            self.two_char_names[1] = '祥子（黑祥）' if self.sakiko_state else '祥子（白祥）'
+        if self.current_chat is None:
+            self.two_char_names = ["空槽", "空槽"]
+            return
+        roster = self.theater_cast(self.current_chat)
+        form_label = "黑祥" if self.sakiko_state else "白祥"
+        self.two_char_names = []
+        for role in roster.opening:
+            if not role:
+                self.two_char_names.append("空槽")
+            elif role not in roster.characters:
+                self.two_char_names.append(f"{roster.label(role)}（未安装）")
+            else:
+                name = roster.label(role)
+                self.two_char_names.append(f"{name}（{form_label}）" if role == "sakiko" else name)
 
     def convert_sakiko_state(self):
-        if self.current_chat is None or not any(self.character_list[index].character_folder_name == "sakiko" for index in self.current_char_index):
+        if self.current_chat is None or not any(self.character_list[index].character_folder_name == "sakiko"
+                                                for index in self.current_char_index if index is not None):
             self.message_queue.put("祥子好像不在…")
             return
         if not self.playback_available():
@@ -2637,7 +2577,8 @@ class ViewerGUI(QWidget):
             action.setData(key)
             action.triggered.connect(lambda checked=False, value=key: self.to_live2d_change_character_queue.put({"type": "mask_action", "action": value}))
         def refresh():
-            present = any(self.character_list[index].character_folder_name == "sakiko" for index in self.current_char_index)
+            present = any(self.character_list[index].character_folder_name == "sakiko"
+                          for index in self.current_char_index if index is not None)
             bindings = mask_actions(self.current_chat.get_custom_live2d_model_meta("祥子")) if self.current_chat and present and self.sakiko_state else {}
             for action in menu.actions():
                 action.setEnabled(action.data() in bindings and self.generate_btn.isEnabled() and not self.pending_turn_uids and (self.playback_idle_value is None or self.playback_idle_value.value))
@@ -2713,6 +2654,9 @@ class ViewerGUI(QWidget):
             return
         chat = self.current_chat
         indices = list(self.current_char_index)
+        if None in indices:
+            self.messages_box.setText("请先安装开场角色，再生成剧本。")
+            return
         meta = copy.deepcopy(chat.meta.theater.to_dict())
         if not meta.get("situation"):
             meta["situation"] = chat.start_message or ""
@@ -2997,9 +2941,9 @@ class ViewerGUI(QWidget):
 
     def _single_replay_payload(self, index: int) -> Dict[str, Any]:
         """携带整段场景配置，单句回放可从默认舞台解析到目标句。"""
-        messages = [message.as_dict() for message in self.current_chat.message_list]
+        messages = ViewerGUI._playback_messages(self, self.current_chat)
         # 当前句与上下文使用独立字典，避免形成递归引用或写入消息存档。
-        turn = self.current_chat.message_list[index].as_dict()
+        turn = dict(messages[index])
         turn["scene_context"] = {"messages": messages, "index": index}
         return turn
 
@@ -3078,7 +3022,8 @@ class ViewerGUI(QWidget):
                 return
             if not still_current():
                 return
-            if not delete_saved_message(chat, message, self._save_chat):
+            roster = self.theater_cast(chat) if hasattr(self, "theater_cast") else None
+            if not delete_saved_message(chat, message, self._save_chat, roster=roster):
                 return
             # 先刷新运行时身份，再渲染文本；渲染可能处理迟到的 Qt 回执。
             self.load_playback_script(preserve_scene=True)
@@ -3132,23 +3077,39 @@ class ViewerGUI(QWidget):
             payload = self._build_active_slots_payload(preserve_playback=True)
             slots = payload["slots"]
             names = [slot["character_name"] for slot in slots]
-            dialog = MultiCharInsertDialog(names, anchor.character_name if anchor is not None else names[0], self)
+            roster = self.theater_cast(chat) if hasattr(self, "theater_cast") else None
+            if roster is not None:
+                index = (next(index for index, item in enumerate(chat.message_list) if item is anchor)
+                         + int(request["after"])) if anchor is not None else 0
+                previous = roster.casts()[index - 1] if index else roster.opening
+                dialog = MultiCharInsertDialog(names, anchor.character_name if anchor is not None else names[0],
+                                               self, roster=roster, previous=previous, save=self._save_chat)
+            else:
+                dialog = MultiCharInsertDialog(names, anchor.character_name if anchor is not None else names[0], self)
             try:
                 if dialog.exec_() != QDialog.Accepted:
                     return
                 data = dialog.message_data()
+                cast = dialog.selected_cast() if roster is not None else None
             finally:
                 dialog.deleteLater()
             if not still_current() or not data["text"].strip():
                 return
             target = Message.from_dict(data)
+            if roster is not None:
+                payload = roster.payload(cast)
+                slots = payload["slots"]
+                names = [slot["character_name"] for slot in slots if slot["character_name"]]
             resources = {}
             for index, slot in enumerate(slots):
                 direction = ("L" if index == 0 else "R") if payload.get("motion_facing_mode") == "face_to_face" else "C"
-                resources[slot["character_name"]] = TheaterResources(slot.get("model_json_path"), direction)
+                if slot["character_name"]:
+                    resources[slot["character_name"]] = TheaterResources(slot.get("model_json_path"), direction)
             palette = [item["theme_color"] for item in char_info_json.values() if item.get("theme_color")]
             target.performance_timeline = initial_message_timeline(target, names, resources, palette)
-            if not insert_saved_message(chat, anchor, target, request["after"], self._save_chat):
+            if roster is not None:
+                target.performance_timeline = roster.timeline(target.performance_timeline, for_storage=True)
+            if not insert_saved_message(chat, anchor, target, request["after"], self._save_chat, roster=roster, cast=cast):
                 return
             self.load_playback_script(preserve_scene=True)
             self.refresh_chat_display()
@@ -3168,10 +3129,15 @@ class ViewerGUI(QWidget):
         from ui_small_theater.multi_char_editor import MultiCharEditor
         payload = self._build_active_slots_payload(preserve_playback=True)
         try:
+            cast_options = {"roster": self.theater_cast(chat)} if hasattr(self, "theater_cast") else {}
             self.performance_editor = MultiCharEditor(
                 self, chat, message,
                 payload["slots"], payload["motion_facing_mode"],
+                **cast_options,
             )
+            settings = getattr(self, "settings_dialog", None)
+            if settings is not None:
+                settings.close()
         except (OSError, ValueError, RuntimeError) as error:
             self.setEnabled(True)
             self.send_playback_command("release_editor", reservation_id=request["request_id"])
@@ -3244,7 +3210,7 @@ class ViewerGUI(QWidget):
             if audio_span(message.audio_path or "", message.text).path:
                 existing += 1
                 continue
-            character = self._find_character_by_name(message.character_name) if message.character_name else None
+            character = ViewerGUI._voice_character(self, message)
             if message.muted or not message.text.strip() or character is None or not character.has_valid_voice_model():
                 skipped += 1
             else:
@@ -3340,9 +3306,11 @@ class ViewerGUI(QWidget):
         batch = getattr(self, "_audio_fill", None)
         if batch is not None and batch_task is not batch:
             return False
+        editor = self.performance_editor
+        dialog_parent = editor.resource_window if editor is not None else self
         worker = getattr(self, "generate_thread", None)
         if worker is not None and worker.isRunning():
-            QMessageBox.information(self, "正在合成", "请等待当前音频生成完成。")
+            QMessageBox.information(dialog_parent, "正在合成", "请等待当前音频生成完成。")
             return False
         if batch is None and self.performance_editor is None and not self.playback_available():
             self.message_queue.put("请等待当前播放结束")
@@ -3353,11 +3321,11 @@ class ViewerGUI(QWidget):
 
         message = self.current_chat.message_list[index]
         if not message.character_name:
-            QMessageBox.information(self, "无法合成", "这句台词未选择语音角色，无法生成音频。")
+            QMessageBox.information(dialog_parent, "无法合成", "这句台词未选择语音角色，无法生成音频。")
             return False
-        voice_character = self._find_character_by_name(message.character_name)
+        voice_character = ViewerGUI._voice_character(self, message)
         if voice_character is None or not voice_character.has_valid_voice_model():
-            QMessageBox.information(self, "无法合成", "当前角色未配置可用的语音模型。")
+            QMessageBox.information(dialog_parent, "无法合成", "请检查当前角色的语音模型、参考音频和参考文本配置。")
             return False
         self._audio_regeneration_callback = on_complete
         self._audio_regeneration_autoplay = autoplay
@@ -3444,7 +3412,7 @@ class ViewerGUI(QWidget):
             index = next(index for index, item in enumerate(chat.message_list) if item is message)
             # unblock 与 single 有序执行，使用保存后的快照并将播放位置设为本句。
             self.send_playback_command("single", index=index,
-                                       messages=[item.as_dict() for item in chat.message_list])
+                                       messages=ViewerGUI._playback_messages(self, chat))
 
     def _save_chat(self) -> bool:
         """保存失败时提示用户，并让调用者停止后续成功流程。"""
@@ -3452,7 +3420,12 @@ class ViewerGUI(QWidget):
             self.chat_manager.save()
             return True
         except Exception as exc:
-            QMessageBox.warning(self, "保存失败", f"未保存内容仍在内存中，请重试。\n{exc}")
+            parent = self
+            editor = getattr(self, "performance_editor", None)
+            if editor is not None:
+                window = QApplication.activeModalWidget() or editor.resource_window
+                parent = window if window.isEnabled() else None
+            QMessageBox.warning(parent, "保存失败", f"无法保存到磁盘，请重试。\n{exc}")
             return False
 
     def save_history_data(self):

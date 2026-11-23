@@ -22,6 +22,7 @@ from PyQt5.QtCore import QTimer, Qt, QUrl
 from PyQt5.QtGui import QIcon
 
 from character import CharacterAttributes,  EMOTION_REFERENCE_KEYS, ref_audio_language_list
+from emotion_enum import EMOTION_LABELS_ZH
 from ui_constants import dialogWindowDefaultCss
 
 from log import get_logger
@@ -29,18 +30,10 @@ from log import get_logger
 logger = get_logger(__name__)
 
 class ChangeReferenceAudioWindow(QDialog):
-    EMOTION_LABELS = {
-        "happiness": "happiness（开心）",
-        "sadness": "sadness（难过）",
-        "anger": "anger（生气）",
-        "disgust": "disgust（反感）",
-        "like": "like（喜欢）",
-        "surprise": "surprise（惊讶）",
-        "fear": "fear（害怕）",
-    }
+    EMOTION_LABELS = {key: f"{key}（{label}）" for key, label in EMOTION_LABELS_ZH.items()}
 
-    def __init__(self, current_character: CharacterAttributes, audio_gen_module, desktop_size):
-        super().__init__()
+    def __init__(self, current_character: CharacterAttributes, audio_gen_module, desktop_size, *, parent=None):
+        super().__init__(parent)
         self.current_character = current_character
         self.audio_gen_module = audio_gen_module
         self._initializing = True

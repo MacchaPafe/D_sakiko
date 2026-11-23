@@ -172,6 +172,8 @@ class CharacterAttributes:
     def get_reference_materials_for_emotion(
         self,
         emotion: str | EmotionEnum | None,
+        *,
+        fallback: bool = True,
     ) -> tuple[str | None, str | None, str | None]:
         if self.is_sakiko:
             return None, None, self.gptsovits_ref_audio_lan
@@ -179,14 +181,15 @@ class CharacterAttributes:
         audio_refs = self._emotion_dict(self.gptsovits_ref_audio)
         text_refs = self._emotion_dict(self.gptsovits_ref_audio_text)
         if audio_refs or text_refs:
-            for key in self._candidate_reference_keys(emotion):
+            keys = self._candidate_reference_keys(emotion) if fallback else (self.normalize_reference_emotion(emotion),)
+            for key in keys:
                 audio_path = audio_refs.get(key)
                 prompt_text = text_refs.get(key, "").strip()
                 if self._path_exists(audio_path) and prompt_text:
                     return audio_path, prompt_text, self.gptsovits_ref_audio_lan
             return None, None, self.gptsovits_ref_audio_lan
 
-        if self._path_exists(self.gptsovits_ref_audio):
+        if fallback and self._path_exists(self.gptsovits_ref_audio):
             prompt_text = self._legacy_reference_text_content()
             if prompt_text and isinstance(self.gptsovits_ref_audio, str):
                 return self.gptsovits_ref_audio, prompt_text, self.gptsovits_ref_audio_lan

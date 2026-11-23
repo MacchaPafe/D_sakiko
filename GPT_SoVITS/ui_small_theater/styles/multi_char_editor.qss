@@ -33,7 +33,7 @@ QFrame#multiCharDialogueCard {
     border-radius: 10px;
 }
 
-QLabel#multiCharSpeaker {
+QLabel#multiCharSpeaker, QToolButton#multiCharSpeaker {
     color: #FFFFFF;
     background-color: #F06292;
     border-radius: 8px;
@@ -102,7 +102,7 @@ QLabel#multiCharMessageCount {
     padding: 0 3px;
 }
 
-/* multiCharTextAction：台词卡下方的编辑文本、重新生成音频文字按钮。
+/* multiCharTextAction：台词卡下方的编辑文本按钮。
    multiCharMuteAction：同行的本句静音开关，选中时用淡蓝底表示状态。
    multiCharTextEditActions：仅编辑时显示的保存 / 放弃操作容器。 */
 QPushButton#multiCharTextAction, QToolButton#multiCharMuteAction {
@@ -137,6 +137,55 @@ QPushButton#multiCharTextAction:disabled,
 QToolButton#multiCharMuteAction:disabled {
     color: #A6B3C7;
     background: transparent;
+}
+
+QFrame#multiCharRegeneratePill {
+    background-color: #FAFCFF;
+    border: none;
+    border-radius: @SMALL_PX@px;
+}
+
+QFrame#multiCharRegeneratePill:disabled {
+    background: transparent;
+}
+
+QPushButton#multiCharRegenerateText, QPushButton#multiCharRegenerateEmotion, QToolButton#multiCharRegenerateSettings {
+    color: #687D9A;
+    background: #fff;
+    border: none;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QPushButton#multiCharRegenerateText {
+    border-top-left-radius: 4px;
+    border-bottom-left-radius: 4px;
+}
+
+QToolButton#multiCharRegenerateSettings {
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
+}
+
+QPushButton#multiCharRegenerateText:hover:enabled, QPushButton#multiCharRegenerateText:focus:enabled,
+QPushButton#multiCharRegenerateEmotion:hover:enabled, QPushButton#multiCharRegenerateEmotion:focus:enabled,
+QToolButton#multiCharRegenerateSettings:hover:enabled, QToolButton#multiCharRegenerateSettings:focus:enabled {
+    color: #365C97;
+    background-color: #F2F6FC;
+}
+
+QPushButton#multiCharRegenerateText:pressed:enabled, QPushButton#multiCharRegenerateEmotion:pressed:enabled,
+QToolButton#multiCharRegenerateSettings:pressed:enabled {
+    background-color: #E6EFFB;
+}
+
+QPushButton#multiCharRegenerateText:disabled, QPushButton#multiCharRegenerateEmotion:disabled,
+QToolButton#multiCharRegenerateSettings:disabled {
+    color: #A6B3C7;
+}
+
+QFrame#multiCharRegenerateDivider {
+    background-color: #D6E1EF;
+    border: none;
 }
 
 QWidget#multiCharTextEditActions {
@@ -527,7 +576,9 @@ QLabel#multiCharSceneSummary {
     padding: 0 4px;
 }
 
-QWidget#multiCharSceneBody {
+/* multiCharSceneRow：场景卡内部的普通容器（标题、滑条行、出场角色组），
+   必须显式透明，否则会被主程序全局 QWidget 底色涂成灰块。 */
+QWidget#multiCharSceneBody, QWidget#multiCharSceneRow {
     background: transparent;
 }
 
@@ -595,10 +646,9 @@ QToolButton#multiCharVisibilityHelp:pressed {
 }
 
 /* multiCharMuted：插句表单中的静音复选框，与出场名单独立。
-   multiCharBackground：本句背景覆盖开关。
    multiCharBlack：本句句前黑场开关，首句禁用。 */
 QCheckBox#multiCharMuted,
-QCheckBox#multiCharBackground, QCheckBox#multiCharBlack, QCheckBox#multiCharCapsule {
+QCheckBox#multiCharBlack, QCheckBox#multiCharCapsule {
     color: #364763;
     background: transparent;
     spacing: 5px;
@@ -606,13 +656,13 @@ QCheckBox#multiCharBackground, QCheckBox#multiCharBlack, QCheckBox#multiCharCaps
 }
 
 QCheckBox#multiCharMuted:disabled,
-QCheckBox#multiCharBackground:disabled, QCheckBox#multiCharBlack:disabled, QCheckBox#multiCharCapsule:disabled {
+QCheckBox#multiCharBlack:disabled, QCheckBox#multiCharCapsule:disabled {
     color: #A6B3C7;
 }
 
-/* multiCharMuted / multiCharBackground / multiCharBlack：统一勾选框，未勾选时保留边界。 */
+/* multiCharMuted / multiCharBlack：统一勾选框，未勾选时保留边界。 */
 QCheckBox#multiCharMuted::indicator,
-QCheckBox#multiCharBackground::indicator, QCheckBox#multiCharBlack::indicator, QCheckBox#multiCharCapsule::indicator {
+QCheckBox#multiCharBlack::indicator, QCheckBox#multiCharCapsule::indicator {
     width: @FONT_PX@px;
     height: @FONT_PX@px;
     border: 1px solid #B4C7E6;
@@ -621,25 +671,40 @@ QCheckBox#multiCharBackground::indicator, QCheckBox#multiCharBlack::indicator, Q
 }
 
 QCheckBox#multiCharMuted::indicator:checked,
-QCheckBox#multiCharBackground::indicator:checked, QCheckBox#multiCharBlack::indicator:checked, QCheckBox#multiCharCapsule::indicator:checked {
+QCheckBox#multiCharBlack::indicator:checked, QCheckBox#multiCharCapsule::indicator:checked {
     background-color: #5A7FE7;
     border-color: #4A6FD8;
     image: url("@CHECK_ICON@");
 }
 
 QCheckBox#multiCharMuted::indicator:disabled,
-QCheckBox#multiCharBackground::indicator:disabled, QCheckBox#multiCharBlack::indicator:disabled, QCheckBox#multiCharCapsule::indicator:disabled {
+QCheckBox#multiCharBlack::indicator:disabled, QCheckBox#multiCharCapsule::indicator:disabled {
     background-color: #DFE6F2;
     border-color: #CDD8E9;
 }
 
 /* multiCharInsertSpeaker：添加台词表单的两名角色及“无”下拉选择。 */
-QComboBox#multiCharInsertSpeaker, QComboBox#multiCharBgmMode {
+QComboBox#multiCharInsertSpeaker {
     color: #364763;
     background-color: #FFFFFF;
     border: 1px solid #D4E0F0;
     border-radius: 6px;
     padding: @PAD_Y@px @PAD_X@px;
+}
+
+/* multiCharSceneSubpanel：BGM 淡入淡出与胶囊转场子参数的缩进浅底色容器，
+   用左侧 3px 柔和导引线区分一级开关与二级细项。 */
+QFrame#multiCharSceneSubpanel {
+    background-color: #F6F9FE;
+    border: 1px solid #E2EAF6;
+    border-left: 3px solid #9CB9EC;
+    border-radius: 6px;
+}
+
+QLabel#multiCharSubpanelLabel {
+    color: #5A6D8A;
+    font-size: @SMALL_PX@px;
+    background: transparent;
 }
 
 /* multiCharBlackDuration：横向调节黑场总时长的细轨滑块，蓝色填充显示当前值。
@@ -700,11 +765,17 @@ QLabel#multiCharBlackDurationLabel:disabled, QLabel#multiCharCapsuleDurationLabe
 QToolButton#multiCharRefresh, QToolButton#multiCharCustomExpression,
 QToolButton#multiCharTransitionPreview,
 QToolButton#multiCharBackgroundFile, QToolButton#multiCharBgmFile {
-    color: #536C9C;
+    color: #465B7A;
     background-color: #FFFFFF;
     border: 1px solid #D4E0F0;
     border-radius: 6px;
     padding: @PAD_Y@px @PAD_X@px;
+}
+
+/* 背景与音乐文件选择框统一左对齐，避免曲名在宽按钮内居中悬空 */
+QToolButton#multiCharBackgroundFile, QToolButton#multiCharBgmFile {
+    text-align: left;
+    background-color: #F9FBFF;
 }
 
 QToolButton#multiCharRefresh:hover, QToolButton#multiCharCustomExpression:hover,
@@ -737,4 +808,140 @@ QMenu#multiCharInsertMenu::item {
 QMenu#multiCharInsertMenu::item:selected {
     color: #254EDB;
     background-color: #EAF2FF;
+}
+
+/* multiCharCapsuleApply：转场文本旁的弱化“✓”确认按钮，回车或失焦已会自动保存。 */
+QToolButton#multiCharCapsuleApply {
+    color: #5A7FE7;
+    background-color: #FFFFFF;
+    border: 1px solid #D4E0F0;
+    border-radius: 6px;
+    padding: @PAD_Y@px 8px;
+    font-weight: bold;
+}
+
+QToolButton#multiCharCapsuleApply:hover {
+    color: #254EDB;
+    background-color: #F4F8FE;
+    border-color: #B4C7E6;
+}
+
+
+/* ================= 9. 多角色出场胶囊与说话人抽屉 ================= */
+/* multiCharCastButtons：流式多角色容器必须显式透明，消除主程序全局灰底 */
+QWidget#multiCharCastButtons {
+    background: transparent;
+}
+
+/* multiCharRolePill：未点亮使用统一柔灰底配主题色圆点；点亮色由代码按角色原色覆写 */
+QPushButton#multiCharRolePill {
+    color: #475569;
+    background-color: #F5F7FB;
+    border: 1px solid #DCE4F0;
+    border-radius: 8px;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QPushButton#multiCharRolePill:hover:!checked {
+    color: #243046;
+    background-color: #EDF3FC;
+    border-color: #BDD0EA;
+}
+
+QPushButton#multiCharRolePill:focus {
+    border-color: #7799CC;
+}
+
+QPushButton#multiCharRolePill:disabled {
+    color: #A6B3C7;
+    background-color: #EDF1F7;
+    border-color: #DFE6F2;
+}
+
+/* multiCharAddRole：流式角色列表末尾的虚线「＋」按钮，与角色胶囊等高 */
+QPushButton#multiCharAddRole {
+    color: #5A7FE7;
+    background-color: #F7FAFF;
+    border: 1px dashed #B8CBE8;
+    border-radius: 8px;
+    padding: @PAD_Y@px @PAD_X@px;
+    font-weight: bold;
+}
+
+QPushButton#multiCharAddRole:hover:enabled {
+    color: #254EDB;
+    background-color: #EAF2FF;
+    border: 1px solid #7295F2;
+}
+
+QPushButton#multiCharAddRole:pressed:enabled {
+    background-color: #DCE8FD;
+}
+
+QPushButton#multiCharAddRole:disabled {
+    color: #A6B3C7;
+    background-color: #EDF1F7;
+    border-color: #DFE6F2;
+}
+
+/* multiCharCastSwap：场景出场行右侧的左右互换按钮 */
+QPushButton#multiCharCastSwap {
+    color: #465B7A;
+    background-color: #FFFFFF;
+    border: 1px solid #D4E0F0;
+    border-radius: 7px;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QPushButton#multiCharCastSwap:hover:enabled {
+    color: #254EDB;
+    background-color: #F4F8FE;
+    border-color: #B4C7E6;
+}
+
+QPushButton#multiCharCastSwap:pressed:enabled {
+    background-color: #E9F0FA;
+}
+
+QPushButton#multiCharCastSwap:disabled {
+    color: #A6B3C7;
+    background-color: #EDF1F7;
+    border-color: #DFEAFA;
+}
+
+/* multiCharSpeakerMenu：左上角说话人铭牌展开的选择抽屉 */
+QMenu#multiCharSpeakerMenu, QMenu#multiCharEmotionMenu {
+    color: #364763;
+    background-color: #FFFFFF;
+    border: 1px solid #D4E0F0;
+    border-radius: 8px;
+    padding: 4px;
+}
+
+QMenu#multiCharSpeakerMenu::separator {
+    height: 1px;
+    background: #E5ECF6;
+    margin: 4px 8px;
+}
+
+QMenu#multiCharSpeakerMenu::item, QMenu#multiCharEmotionMenu::item {
+    border-radius: 5px;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QMenu#multiCharSpeakerMenu::item:selected, QMenu#multiCharEmotionMenu::item:selected {
+    color: #254EDB;
+    background-color: #EAF2FF;
+}
+
+QMenu#multiCharEmotionMenu::indicator {
+    margin-left: 4px;
+    width: @SMALL_PX@px;
+    height: @SMALL_PX@px;
+}
+
+QMenu#multiCharEmotionMenu::indicator:checked {
+    background: #5A7FE7;
+    border-radius: 3px;
+    image: url(@CHECK_ICON@);
 }

@@ -67,16 +67,27 @@ def _pack_entry(chat: Chat, archive: zipfile.ZipFile, resources: ResourceTable,
     extensions["characterNames"] = {**object_dict(extensions.get("characterNames")),
                                    **object_dict(extra.get("characterNames"))}
     if data["mode"] == "scripted-dialogue":
+        from character import GetCharacterAttributes
+        from live2d_support.theater_cast import TheaterCast, theater_opening_names
+
         settings = object_dict(data["meta"]["settings"])
         scenario = object_dict(settings.get("scenario"))
         actors = object_dict(scenario.get("characters"))
-        theater = chat.meta.theater.to_dict()
-        for index, identifier in enumerate(data["characterIds"]):
-            actor = object_dict(theater.get(f"character_{index}"))
+        theater = chat.meta.theater
+        try:
+            installed = GetCharacterAttributes().character_class_list
+        except OSError:
+            installed = []
+        roster = TheaterCast(chat, theater_opening_names(chat), installed, "screen")
+        for identifier, actor in zip(roster.opening, (theater.character_0, theater.character_1)):
+            if not identifier:
+                continue
+            if identifier not in data["characterIds"]:
+                data["characterIds"].append(identifier)
+            extensions["characterNames"].setdefault(identifier, roster.label(identifier))
             actors[identifier] = {**object_dict(actors.get(identifier)),
-                                 "speakingStyle": actor.get("talk_style", ""),
-                                 "interaction": actor.get("interaction_details", "")}
-        settings["scenario"] = {**scenario, "situation": theater["situation"] or chat.start_message,
+                                 "speakingStyle": actor.talk_style, "interaction": actor.interaction_details}
+        settings["scenario"] = {**scenario, "situation": theater.situation or chat.start_message,
                                 "characters": actors}
     mapping: dict[str, str] = {}
     models: set[str] = set()

@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from PyQt5.QtWidgets import QApplication, QMenu, QWidget
+from PyQt5.QtGui import QPalette
+from PyQt5.QtWidgets import QApplication, QGroupBox, QMenu, QWidget
 
 from chat.chat import Chat
 from multi_char_main import SettingsDialog, ViewerGUI
@@ -66,28 +67,33 @@ def test_theater_settings_exposes_sakiko_model_configuration(app, monkeypatch):
     import multi_char_main
     monkeypatch.setattr(multi_char_main.character, "GetCharacterAttributes", lambda: SimpleNamespace(
         character_class_list=theater(Chat()).character_list))
-    config = multi_char_main.d_sakiko_config
-    monkeypatch.setattr(config.multi_char_subtitle_mode, "value", "translation")
     save = Mock()
-    monkeypatch.setattr(config, "set", save)
+    config = SimpleNamespace(multi_char_subtitle_mode=SimpleNamespace(value="translation"), set=save)
+    monkeypatch.setattr(multi_char_main, "d_sakiko_config", config)
     parent = QWidget()
     parent.to_live2d_change_character_queue = Queue()
-    for name in ("_change_character", "config_more_info", "convert_sakiko_state", "set_bgm"):
+    for name in ("convert_sakiko_state", "set_bgm"):
         setattr(parent, name, Mock())
     parent.get_current_l2d_fps = lambda: 60
     parent.motion_facing_mode_button_text = lambda: "对话朝向：正常"
     parent.is_motion_facing_mode_available = lambda: False
     parent.create_mask_menu = lambda: QMenu(parent)
-    parent.bgm_player = SimpleNamespace(setVolume=Mock())
+    parent._bgm_volume = 50
+    parent.set_bgm_volume = Mock()
     dialog = SettingsDialog(parent, ["祥子", "爱音"], None, SimpleNamespace(speed=1, pause_second=0.5))
     try:
-        assert not dialog.btn_character_0_model.isHidden()
-        assert not dialog.btn_character_1_model.isHidden()
+        assert list(dialog.model_buttons) == ["sakiko", "anon"]
         assert dialog.btn_sakiko_model.menu() is not None
-        assert dialog.subtitle_mode_combo.currentData() == "translation"
-        assert [dialog.subtitle_mode_combo.itemData(i) for i in range(3)] == [
-            "original", "translation", "both"]
-        dialog.subtitle_mode_combo.setCurrentIndex(0)
+        assert "角色管理" not in [group.title() for group in dialog.findChildren(QGroupBox)]
+        assert dialog.subtitle_mode_group.checkedButton() is dialog.subtitle_buttons["translation"]
+        assert [button.text() for button in dialog.subtitle_buttons.values()] == ["仅原文", "仅翻译", "原文与翻译"]
+        dialog.show()
+        app.processEvents()
+        assert all(button.palette().color(QPalette.ButtonText).name() == multi_char_main.THEME_COLOR.lower()
+                   for button in dialog.subtitle_buttons.values())
+        highlight = dialog.subtitle_modes.highlight.grab().toImage()
+        assert highlight.pixelColor(highlight.rect().center()).name() == "#ffffff"
+        dialog.subtitle_buttons["original"].click()
         save.assert_called_once_with(config.multi_char_subtitle_mode, "original")
         assert parent.to_live2d_change_character_queue.get_nowait() == {
             "type": "set_subtitle_mode", "mode": "original"}

@@ -28,7 +28,7 @@ def test_music_mode_duration_visibility_and_saved_values(editor, monkeypatch, tm
     editor.scene_toggle.setChecked(True)
     assert editor.bgm_file.isHidden()
     assert all(row.isHidden() for row, _, _ in editor.bgm_durations.values())
-    editor.bgm_mode.setCurrentIndex(1)
+    editor.bgm_buttons["play"].click()
     assert create.call_args.kwargs["selection_only"]
     assert editor.message.scene_before["bgm"] == {
         "action": "play", "file": "test.wav", "fade_out_ms": 500, "fade_in_ms": 500}
@@ -47,12 +47,12 @@ def test_music_mode_duration_visibility_and_saved_values(editor, monkeypatch, tm
     assert "音乐：test.wav" in editor.scene_summary.toolTip()
     restored = Message.from_dict(editor.message.as_dict())
     assert restored.scene_before["bgm"] == editor.message.scene_before["bgm"]
-    editor.bgm_mode.setCurrentIndex(2)
+    editor.bgm_buttons["stop"].click()
     assert editor.message.scene_before["bgm"] == {"action": "stop", "fade_out_ms": 1500}
     assert editor.bgm_file.isHidden()
     assert not editor.bgm_durations["fade_out_ms"][0].isHidden()
     assert editor.bgm_durations["fade_in_ms"][0].isHidden()
-    editor.bgm_mode.setCurrentIndex(0)
+    editor.bgm_buttons[None].click()
     assert editor.message.scene_before is None
     config_set.assert_not_called()
 
@@ -63,9 +63,9 @@ def test_cancel_music_selection_keeps_original_scene(editor, monkeypatch):
     dialog.exec_.return_value = QDialog.Rejected
     monkeypatch.setattr(module, "CustomBGMDialog", Mock(return_value=dialog))
     saves = editor.owner.saved
-    editor.bgm_mode.setCurrentIndex(1)
+    editor.bgm_buttons["play"].click()
     assert editor.message.scene_before is None and editor.owner.saved == saves
-    assert editor.bgm_mode.currentData() is None
+    assert editor.bgm_buttons[None].isChecked()
     assert [call.args[0] for call in editor.owner.bgm_player.setMuted.call_args_list] == [True, False]
 
 
@@ -319,14 +319,14 @@ def test_background_picker_only_accepts_decodable_direct_child(editor, monkeypat
     warning = Mock()
     monkeypatch.setattr(QMessageBox, "warning", warning)
     for _ in range(3):
-        editor.background_check.setChecked(True)
+        editor.background_buttons[True].click()
         assert editor.message.scene_before is None
-        assert not editor.background_check.isChecked()
+        assert editor.background_buttons[False].isChecked()
     assert warning.call_count == 2
-    editor.background_check.setChecked(True)
+    editor.background_buttons[True].click()
     assert editor.message.scene_before == {"background": "school.png"}
     assert editor.background_file.text() == "school.png"
-    editor.background_check.setChecked(False)
+    editor.background_buttons[False].click()
     assert editor.message.scene_before is None
 
 

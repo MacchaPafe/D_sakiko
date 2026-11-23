@@ -197,6 +197,7 @@ class Message:
     scene_before: object = None
     # 静音只影响本句语音和口型，保留音频路径及其原有时长。
     muted: bool = False
+    speaker_id: str = ""
 
     def __setattr__(self, name: str, value: object) -> None:
         """兼容旧界面字段编辑，同时立即更新稳定身份对应的存档节点。"""
@@ -204,6 +205,8 @@ class Message:
         binding = getattr(self, "_archive_binding", None)
         if binding is not None and name in {"text", "translation", "emotion", "performance"}:
             binding[0].check_editable()
+        if binding is not None and name == "character_name" and previous != value:
+            object.__setattr__(self, "speaker_id", "")
         object.__setattr__(self, name, value)
         binding = getattr(self, "_archive_binding", None)
         if binding is not None and not name.startswith("_"):
@@ -218,6 +221,14 @@ class Message:
                     if name != field:
                         raw[field] = copy.deepcopy(selected[2].get(field))
             timeline.write_view(identifier, raw)
+
+    def set_speaker(self, name: str, speaker_id: str) -> None:
+        """一次写入说话人身份与显示名，保留音频和编排字段。"""
+        binding = getattr(self, "_archive_binding", None)
+        if binding is not None:
+            binding[0].check_editable()
+        object.__setattr__(self, "character_name", name)
+        self.speaker_id = speaker_id
 
     @property
     def id(self) -> str:
@@ -278,6 +289,7 @@ class Message:
             performance_timeline=copy.deepcopy(data.get("performance_timeline")),
             scene_before=copy.deepcopy(data.get("scene_before")),
             muted=data.get("muted") is True,
+            speaker_id=str(data.get("speaker_id") or ""),
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -302,6 +314,8 @@ class Message:
             data["scene_before"] = copy.deepcopy(self.scene_before)
         if self.muted:
             data["muted"] = True
+        if self.speaker_id:
+            data["speaker_id"] = self.speaker_id
         return data
 
     @property

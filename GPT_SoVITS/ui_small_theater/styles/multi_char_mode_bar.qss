@@ -1,0 +1,36 @@
+/* 背景、音乐和字幕的分段选择，共用浅蓝轨道与白色滑块。 */
+QFrame#multiCharBgmModes, QFrame#multiCharBackgroundModes, QFrame#multiCharSubtitleModes {
+    background-color: #E4ECF7;
+    border: 1px solid #D6E1F0;
+    border-radius: 7px;
+}
+
+QToolButton#multiCharBgmMode, QToolButton#multiCharBackgroundMode, QToolButton#multiCharSubtitleMode {
+    color: @TEXT@;
+    background-color: transparent;
+    border: none;
+    border-radius: 5px;
+    padding: @PAD_Y@px @PAD_X@px;
+}
+
+QToolButton#multiCharSubtitleMode {
+    font-size: @FONT_PX@px;
+}
+
+QToolButton#multiCharBgmMode:hover:!checked, QToolButton#multiCharBackgroundMode:hover:!checked,
+QToolButton#multiCharSubtitleMode:hover:!checked {
+    color: @HOVER_TEXT@;
+    background-color: rgba(255, 255, 255, 0.55);
+}
+
+QToolButton#multiCharBgmMode:checked, QToolButton#multiCharBackgroundMode:checked,
+QToolButton#multiCharSubtitleMode:checked {
+    color: @CHECKED_TEXT@;
+    font-weight: bold;
+}
+
+QFrame#multiCharSceneSelection {
+    background-color: #FFFFFF;
+    border: 1px solid #D0DDF0;
+    border-radius: 5px;
+}

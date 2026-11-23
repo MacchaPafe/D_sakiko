@@ -63,6 +63,83 @@ def tick_at(stage, milliseconds):
     stage.tick()
 
 
+def test_preview_model_override_preserves_legacy_visibility(stage):
+    opening = {"slots": [{"character_name": "A", "model_json_path": "old.json"},
+                         {"character_name": "B", "model_json_path": "b.json"}]}
+    stage.opening_slots = opening
+    changed = deepcopy(opening)
+    changed["slots"][0]["model_json_path"] = "new.json"
+    stage.bind_cast = Mock()
+    messages = [{"scene_before": {"visible_characters": ["B"]}}]
+    stage.show(stage.resolve(messages, 0, opening_slots=changed))
+    stage.bind_cast.assert_called_once_with(changed)
+    assert stage.state["visible_characters"] == ["B"]
+    assert stage.resolve(messages, 0)["slots"] == opening
+
+
+@pytest.mark.parametrize(("new_cast", "leaving", "moving", "destination"), [
+    (("B", "C"), "A", "B", -0.6),
+    (("C", "A"), "B", "A", 0.65),
+])
+def test_cast_replacement_waits_for_survivor_to_clear_newcomers_slot(stage, new_cast, leaving, moving, destination):
+    """两条对称换角都按退场、让位、进场推进，不重置留场者。"""
+    def payload(cast):
+        return {"slots": [{"slot": side, "character_name": name} for side, name in enumerate(cast)]}
+
+    active = {}
+
+    def bind(value):
+        active.clear()
+        active.update({slot["character_name"]: ((-0.6, 0.65)[slot["slot"]], 0.0)
+                       for slot in value["slots"]})
+
+    stage.bind_cast = bind
+    stage.offsets = lambda: active
+    stage.opening_slots = payload(("A", "B"))
+    stage.show(stage.base_state())
+    stage.begin(stage.resolve([{"stage_slots": payload(new_cast)}], 0), None)
+    tick_at(stage, 150)
+    assert stage.actors[leaving][0] == pytest.approx(0.5)
+    assert "C" not in active
+    tick_at(stage, 450)
+    assert leaving not in active and stage.actors["C"][0] == 0
+    assert stage.actors[moving][1] == pytest.approx(0.025)
+    tick_at(stage, 750)
+    assert stage.actors[moving][1] == pytest.approx(destination)
+    assert stage.actors["C"][0] == pytest.approx(0.5)
+    stage.reset.assert_called_once_with("C")
+    tick_at(stage, 901)
+    assert not stage.busy
+
+
+def test_cast_swap_keeps_character_identity_and_uses_bob_only_for_button_preview(stage):
+    """正式互换平移，编排按钮预览另外增加竖向起伏。"""
+    def payload(left, right):
+        return {"slots": [{"slot": 0, "character_name": left}, {"slot": 1, "character_name": right}]}
+
+    active = {}
+
+    def bind(value):
+        active.update({slot["character_name"]: ((-0.6, 0.65)[slot["slot"]], 0.0)
+                       for slot in value["slots"]})
+
+    stage.bind_cast = bind
+    stage.offsets = lambda: active
+    stage.opening_slots = payload("A", "B")
+    stage.show(stage.base_state())
+    state = stage.resolve([{"stage_slots": payload("B", "A")}], 0)
+    stage.begin(state, None)
+    tick_at(stage, 150)
+    assert stage.actors["A"][1:] == pytest.approx((0.025, 0))
+    stage.show(stage.base_state())
+    stage.begin(state, None, walk=True)
+    tick_at(stage, 130)
+    assert stage.actors["A"][2] > 0
+    tick_at(stage, 521)
+    assert stage.actors["A"][1:] == pytest.approx((0.65, 0))
+    stage.reset.assert_not_called()
+
+
 def target(stage, visible, background="default.png"):
     """提前准备目标背景并构造独立舞台目标。"""
     stage.backgrounds.prepare(background)

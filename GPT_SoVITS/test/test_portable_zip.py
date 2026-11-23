@@ -4,11 +4,14 @@ from __future__ import annotations
 import json
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from chat.chat import Chat, ChatManager, ChatType, EmotionEnum, Message, SmallTheaterPromptGenerator
+from chat.chat import (
+    Chat, ChatManager, ChatType, EmotionEnum, Message, SmallTheaterPromptGenerator, _resolve_runtime_audio_path,
+)
 from chat.portable_zip import FORMAT
 
 
@@ -37,6 +40,47 @@ def test_theater_zip_preserves_master_scene_and_stable_ids(tmp_path: Path) -> No
     assert restored.chat_id != chat.chat_id and restored.meta.theater.character_0.talk_style == "低声"
     assert [one.id for one in restored.message_list] == original
     assert all(one.muted and one.scene_before == line.scene_before for one in restored.message_list)
+
+
+def test_theater_zip_uses_saved_opening_ids_and_round_trips_later_cast(tmp_path: Path) -> None:
+    audio = tmp_path / "原录音.wav"
+    audio.write_bytes(b"recording")
+    timeline = {"characters": {"guest": {"motions": [{"at_ms": 100}], "expressions": []}}}
+    opening = Message.from_dict({"character_name": "甲旧名", "speaker_id": "left", "text": "第一句"})
+    later = Message.from_dict({"character_name": "丙", "speaker_id": "guest", "text": "换人后",
+                              "scene_before": {"cast": ["guest", "right"]}, "muted": True,
+                              "performance": {"motion": "nod", "expression": "smile"},
+                              "performance_timeline": timeline, "audio_path": str(audio)})
+    roles = [SimpleNamespace(character_folder_name=identifier, character_name=name)
+             for identifier, name in [("left", "甲新名"), ("right", "乙"), ("guest", "丙")]]
+    with patch("character.GetCharacterAttributes", return_value=SimpleNamespace(character_class_list=roles)):
+        chat = Chat("多角色剧本", SmallTheaterPromptGenerator(["甲旧名", "乙"]), ChatType.SMALL_THEATER,
+                    meta={"theater": {"character_0": {"character_id": "left", "talk_style": "低声",
+                                                    "interaction_details": "先问好"},
+                                      "character_1": {"character_id": "right", "talk_style": "急促",
+                                                    "interaction_details": "回应"},
+                                      "extra_character_ids": ["guest"]}}, message_list=[opening, later])
+        path = tmp_path / "多角色剧本.zip"
+        manager = ChatManager([chat])
+        manager.export_chats_to_backup([chat.chat_id], path, include_audio=True)
+    with zipfile.ZipFile(path) as archive:
+        entry = json.loads(archive.read("manifest.json"))["chats"][0]["electron"]
+    assert entry["characterIds"][0].startswith("missing-")  # 旧提示词中的显示名先被登记
+    assert entry["meta"]["settings"]["scenario"]["characters"] == {
+        "left": {"speakingStyle": "低声", "interaction": "先问好"},
+        "right": {"speakingStyle": "急促", "interaction": "回应"},
+    }
+    with patch("chat.chat._reference_audio_dir", return_value=tmp_path / "restored-audio"):
+        restored = manager.import_chats_from_backup(path).imported_chats[0]
+        restored_audio = _resolve_runtime_audio_path(restored.message_list[1].audio_path)
+    assert restored.meta.theater.to_dict() == chat.meta.theater.to_dict()
+    assert [message.speaker_id for message in restored.message_list] == ["left", "guest"]
+    restored_later = restored.message_list[1]
+    assert restored_later.scene_before == later.scene_before
+    assert restored_later.muted is True
+    assert restored_later.performance == later.performance
+    assert restored_later.performance_timeline == timeline
+    assert restored_audio is not None and restored_audio.read_bytes() == audio.read_bytes()
 
 
 @pytest.mark.parametrize("nested", [False, True])

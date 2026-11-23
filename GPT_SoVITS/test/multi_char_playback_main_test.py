@@ -11,10 +11,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
-from PyQt5.QtCore import QPoint, QUrl
+from PyQt5.QtCore import QPoint, Qt, QUrl
 from PyQt5.QtWidgets import QApplication
 
-from chat.chat import Chat, Message
+from chat.chat import Chat, ChatType, Message, SmallTheaterPromptGenerator
 from multi_char_main import InteractiveChatBrowser, ViewerGUI
 
 
@@ -73,6 +73,45 @@ def host():
 def take_command(host):
     """读取唯一新命令，额外命令由各测试显式检查。"""
     return host.to_live2d_change_character_queue.get_nowait()
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_opening_roles_use_saved_ids_after_rename_or_package_removal(host, installed):
+    def role(identifier, name):
+        return SimpleNamespace(character_folder_name=identifier, character_name=name,
+                               live2d_json=f"{identifier}.model3.json", has_valid_voice_model=lambda: True)
+
+    host.character_list = [role("other", "甲旧名"), role("beta", "乙")]
+    if installed:
+        host.character_list.append(role("alpha", "甲新名"))
+    host.update_script_button_visibility = Mock()
+    host._model_paths_support_motion_facing = Mock(return_value=False)
+    for name in ("switch_chat", "_ensure_current_chat_theater_meta", "_chat_character_names", "theater_cast",
+                 "set_two_char_names"):
+        setattr(host, name, MethodType(getattr(ViewerGUI, name), host))
+    chat = Chat("改名后打开", SmallTheaterPromptGenerator(["甲旧名", "乙"]), ChatType.SMALL_THEATER,
+                meta={"theater": {"character_0": {"character_id": "alpha"},
+                                  "character_1": {"character_id": "beta"}}},
+                message_list=[Message.from_dict({"character_name": "甲旧名", "speaker_id": "alpha",
+                                                "text": "前句", "translation": "原翻译", "audio_path": "original.wav",
+                                                "scene_before": {"cast": ["alpha", "beta"]}})])
+
+    ViewerGUI.on_chat_item_clicked(host, SimpleNamespace(data={Qt.UserRole: chat}.get))
+
+    assert host.current_chat is chat
+    assert host.current_char_index == [2 if installed else None, 1]
+    assert host.can_generate_audio_for_current_chat is installed
+    assert host.two_char_names[0] == ("甲新名" if installed else "甲旧名（alpha）（未安装）")
+    assert ("未安装" in host.messages_box.setText.call_args.args[0]) is not installed
+    command = take_command(host)
+    slots = command["cast_opening"]["slots"]
+    assert command["slots_payload"]["slots"] == command["messages"][0]["stage_slots"]["slots"] == slots
+    assert [(slot["slot"], slot["character_folder_name"], slot["model_json_path"]) for slot in slots] == [
+        (0, "alpha", "alpha.model3.json" if installed else None), (1, "beta", "beta.model3.json"),
+    ]
+    assert command["messages"][0]["audio_path"] == "original.wav"
+    assert command["messages"][0]["translation"] == "原翻译"
+    assert chat.message_list[0].character_name == "甲旧名"
 
 
 def test_loading_script_is_waiting_snapshot_and_revision_changes(host):

@@ -162,9 +162,9 @@ class MultiCharTimeline(QGraphicsView):
 
     def row_at(self, y):
         """查找鼠标对应轨道，双人分组间隙按中线归属上下轨道，超出四轨返回无目标。"""
-        if y < self.top:
+        if y < self.top or not self.rows:
             return None
-        total_h = len(self.rows) * self.row_height + self.group_gap
+        total_h = len(self.rows) * self.row_height + (self.group_gap if len(self.rows) > 2 else 0)
         if y >= self.top + total_h:
             return None
         mid_gap = self.top + 2 * self.row_height + self.group_gap * 0.5
@@ -193,9 +193,9 @@ class MultiCharTimeline(QGraphicsView):
         if self.minimumHeight() != minimum_height:
             self.setMinimumHeight(minimum_height)
         self.row_height = max(minimum_row_height,
-                              (self.viewport().height() - self.top - self.group_gap - 4) // len(self.rows))
-        self.margin = max(145, max(metrics.horizontalAdvance(name + " · 表情")
-                                   for name in self.session.names) + round(metrics.height() * 1.35))
+                              (self.viewport().height() - self.top - self.group_gap - 4) // max(1, len(self.rows)))
+        self.margin = max(145, max((metrics.horizontalAdvance(name + " · 表情")
+                                   for name in self.session.names), default=0) + round(metrics.height() * 1.35))
         self.blocks = []
         duration = self.session.span.duration_ms
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff if self.zoom <= 1.001 else Qt.ScrollBarAsNeeded)

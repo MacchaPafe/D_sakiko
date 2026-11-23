@@ -110,11 +110,14 @@ def test_unowned_message_cannot_borrow_voice(host, monkeypatch):
 
 def test_muted_actor_can_generate_without_unmuting(host):
     """静音角色仍可生成自己的音频，生成入口不会自动取消静音。"""
+    from emotion_enum import EmotionEnum
     message = host.current_chat.message_list[1]
     message.character_name = "B"
+    message.emotion = EmotionEnum.ANGER
     assert ViewerGUI.regenerate_audio(host, 1)
     assert message.muted
     assert host.regenerate_character is host.character_list[1]
+    assert host.regenerate_emotion == "anger"
     host.regenerate_audio_continue.assert_called_once()
 
 

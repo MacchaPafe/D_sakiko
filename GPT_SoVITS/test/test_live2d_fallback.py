@@ -117,6 +117,17 @@ class TheaterLive2DFallbackPolicyTestCase(unittest.TestCase):
         self.assertIsNone(normalized[0]["model_version"])
         self.assertEqual(normalized[1]["model_version"], "v3")
 
+    def test_slot_role_id_takes_precedence_over_legacy_sakiko_name(self) -> None:
+        normalized = self.module._normalize_slots_payload([
+            {"slot": 0, "character_name": "祥子", "character_folder_name": "other"},
+            {"slot": 1, "character_name": "祥子", "sakiko_state": False},
+        ])
+
+        self.assertEqual(normalized[0]["character_folder_name"], "other")
+        self.assertNotIn("sakiko_state", normalized[0])
+        self.assertEqual(normalized[1]["character_folder_name"], "sakiko")
+        self.assertFalse(normalized[1]["sakiko_state"])
+
 
 if __name__ == "__main__":
     unittest.main()

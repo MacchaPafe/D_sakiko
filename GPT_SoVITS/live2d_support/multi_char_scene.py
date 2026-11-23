@@ -44,6 +44,44 @@ def _scene_from_message(message: object) -> dict:
     return scene if isinstance(scene, dict) else {}
 
 
+def resolve_casts(messages, opening, legacy_ids):
+    """逐句投影双槽位，旧剧本的显隐仍以开场角色及原位置为准。"""
+    result = []
+    cast = tuple(opening)
+    for message in messages:
+        scene = _scene_from_message(message)
+        slots = scene.get("cast")
+        if (isinstance(slots, (list, tuple)) and len(slots) == 2
+                and all(slot is None or isinstance(slot, str) and slot for slot in slots)
+                and (slots[0] is None or slots[0] != slots[1])):
+            cast = tuple(slots)
+        elif isinstance(scene.get("visible_characters"), list):
+            visible = [legacy_ids.get(name) for name in scene["visible_characters"] if isinstance(name, str)]
+            cast = tuple(role if role in visible else None for role in opening)
+        result.append(cast)
+    return result
+
+
+def arrange_cast(previous, selected):
+    """留场者保留槽位，其余按角色按钮顺序填入空位。"""
+    incoming = iter(role for role in selected if role not in previous)
+    return tuple(role if role in selected else next(incoming, None) for role in previous)
+
+
+def cast_run_end(casts, start, previous):
+    """返回从指定位置开始、左右均与旧阵容相同的一段的结束位置。"""
+    while start < len(casts) and casts[start] == previous:
+        start += 1
+    return start
+
+
+def scene_with_cast(message, cast):
+    """保存本句完整的左右槽位，保留背景、音乐和过渡配置。"""
+    scene = dict(_scene_from_message(message))
+    scene["cast"] = list(cast)
+    return scene
+
+
 def resolve_bgm(messages: Sequence[object], index: int):
     """只取截至目标句最后一次音乐设置，不补播历史换曲。"""
     result = None

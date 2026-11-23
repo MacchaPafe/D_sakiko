@@ -704,11 +704,13 @@ class Live2DModule:
             {
                 "slot": 0,
                 "character_name": self.character_list[0].character_name,
+                "character_folder_name": getattr(self.character_list[0], "character_folder_name", None),
                 "model_json_path": self.character_list[0].live2d_json,
             },
             {
                 "slot": 1,
                 "character_name": self.character_list[1].character_name,
+                "character_folder_name": getattr(self.character_list[1], "character_folder_name", None),
                 "model_json_path": self.character_list[1].live2d_json,
             }
         ]
@@ -745,7 +747,7 @@ class Live2DModule:
                 else None
             )
 
-            if not character_name:
+            if not character_name and not slot_data.get("empty"):
                 raise ValueError(f"slot={expected_slot} 缺少 character_name")
 
             model_version: Live2DVersion | None = None
@@ -765,7 +767,10 @@ class Live2DModule:
                 "model_json_path": model_json_path,
                 "model_version": model_version,
             })
-            if slot_data.get("character_folder_name") == "sakiko" or character_name == "祥子":
+            role = slot_data.get("character_folder_name")
+            if role:
+                normalized[-1]["character_folder_name"] = role
+            if role == "sakiko" or (not role and character_name == "祥子"):
                 normalized[-1]["character_folder_name"] = "sakiko"
                 normalized[-1]["sakiko_state"] = bool(slot_data.get("sakiko_state", True))
 
@@ -1077,10 +1082,17 @@ class Live2DModule:
         def present_models() -> None:
             """提交当前槽位画面，加载前让旧模型立即从窗口消失。"""
             glClear(GL_COLOR_BUFFER_BIT)
+            glViewport(*stage_viewport())
             backgrounds.draw()
             draw_stage_actors()
-            model_notice_overlay.draw()
-            overlay.draw()
+            if not stage.capsule:
+                model_notice_overlay.draw()
+                overlay.draw()
+            if stage.black > 0:
+                draw_quad(alpha=stage.black)
+            if stage.capsule is not None:
+                capsule_overlay.draw(*stage.capsule, stage_viewport()[2:])
+            glUseProgram(0)
             pygame.display.flip()
 
         def is_dialogue_idle() -> bool:
@@ -1103,21 +1115,35 @@ class Live2DModule:
                 if not started:
                     model.SetSemanticExpression("idle")
 
-        def apply_slots_payload(payload: dict[str, object]) -> None:
-            """按角色及路径差异独立切换槽位，失败后保持空槽位。"""
+        def apply_slots_payload(payload: dict[str, object], stage_change=False) -> None:
+            """以角色和模型目标复用仍在场的模型，互换仅转移对象和原布局。"""
             nonlocal active_motion_facing_mode, this_turn_model, lip_sync_model
             normalized_slots = self._normalize_slots_payload(payload.get("slots"))
             names_changed = [slot["character_name"] for slot in normalized_slots] != self._active_character_names()
             changed_slot = payload.get("changed_slot")
-            changed_slots = {
-                slot for slot in (0, 1)
-                if normalized_slots[slot] != self.active_slots[slot] or changed_slot == slot
-            }
             facing = payload.get("motion_facing_mode")
             old_facing = active_motion_facing_mode
             active_motion_facing_mode = facing if facing in ("screen", "face_to_face") else "screen"
-            for slot in changed_slots:
-                previous = model_group[slot]
+            if stage_change and normalized_slots == self.active_slots and old_facing == active_motion_facing_mode:
+                return
+            retained = {}
+            available = {0, 1}
+            for slot, target in enumerate(normalized_slots):
+                if slot == changed_slot:
+                    continue
+                key = (target.get("character_folder_name", target["character_name"]), target["model_json_path"])
+                source = next((index for index in sorted(available)
+                               if key == (self.active_slots[index].get("character_folder_name",
+                                                                       self.active_slots[index]["character_name"]),
+                                          self.active_slots[index]["model_json_path"])
+                               and self.active_slots[index].get("sakiko_state") == target.get("sakiko_state")), None)
+                if source is not None:
+                    retained[slot] = source
+                    available.remove(source)
+            old_models = list(model_group)
+            old_layouts = list(model_layouts)
+            for slot in available:
+                previous = old_models[slot]
                 if previous is not None:
                     if this_turn_model is previous:
                         this_turn_model = None
@@ -1127,20 +1153,60 @@ class Live2DModule:
                         self._clear_eye_reopen_state()
                     performance.refreshed_playback.discard(previous)
                     previous.dispose()
-                    model_group[slot] = None
+            for slot in (0, 1):
+                source = retained.get(slot)
+                model_group[slot] = old_models[source] if source is not None else None
+                model_layouts[slot] = (old_layouts[source] if source is not None else
+                                       Live2DLayout(scale=self.model_scale, offset_x=0, offset_y=0))
             self.active_slots = normalized_slots
+            loading = set(range(2)) - retained.keys()
             model_notice_overlay.set_failed_slots({
-                slot for slot in (0, 1) if slot not in changed_slots
-                and self.active_slots[slot].get("model_json_path") and model_group[slot] is None
+                slot for slot in retained
+                if self.active_slots[slot].get("model_json_path") and model_group[slot] is None
             })
-            present_models()
-            self._load_models(model_group, model_layouts, win_w_and_h, changed_slots, session)
-            if names_changed:
-                stage.show(stage.base_state())
-            elif changed_slots:
-                stage.actors = stage.actor_targets(stage.state)
+            if any(self.active_slots[slot]["model_json_path"] for slot in loading):
+                present_models()
+                self._load_models(model_group, model_layouts, win_w_and_h, loading, session)
+            if not stage_change:
+                if stage.opening_slots is not None:
+                    stage.opening_slots = {"slots": payload["slots"], "motion_facing_mode": facing}
+                if names_changed:
+                    stage.show(stage.base_state())
+                elif loading:
+                    if stage.opening_slots is not None:
+                        stage.state["slots"] = stage.opening_slots
+                    stage.actors = stage.actor_targets(stage.state)
             refresh_model_notice()
-            apply_idle_facing_motion_if_dialogue_idle(None if old_facing != active_motion_facing_mode else changed_slots)
+            if not stage_change:
+                apply_idle_facing_motion_if_dialogue_idle(
+                    None if old_facing != active_motion_facing_mode else loading)
+
+        def refresh_script_models(payload):
+            """将全局朝向及开场角色换装应用到实际阵容和后续台词。"""
+            scenes = [turn for turn in playback.messages if "stage_slots" in turn]
+            current = stage.state.get("slots")
+            if not scenes or current is None:
+                return False
+            overrides = {slot["character_folder_name"]: slot for slot in payload["slots"]
+                         if slot.get("character_folder_name")}
+
+            def updated(target, facing):
+                slots = []
+                for slot in target["slots"]:
+                    override = overrides.get(slot.get("character_folder_name"))
+                    if override is not None:
+                        slot = dict(slot, model_json_path=override["model_json_path"],
+                                    sakiko_state=override.get("sakiko_state", True))
+                    slots.append(slot)
+                return {"slots": slots, "motion_facing_mode": facing}
+
+            facing = payload.get("configured_facing", payload.get("motion_facing_mode"))
+            for turn in scenes:
+                turn["stage_slots"] = updated(turn["stage_slots"], facing)
+            if stage.opening_slots is not None:
+                stage.opening_slots = updated(stage.opening_slots, payload.get("motion_facing_mode"))
+            stage.show(dict(stage.state, slots=updated(current, facing)))
+            return True
 
         def show_layout_edit_overlay() -> None:
             """刷新小剧场布局编辑模式下的提示文本。"""
@@ -1259,7 +1325,8 @@ class Live2DModule:
                 tell_qt_this_turn_finish_queue.put({"type": "multi_char_scene_error", "error": message})
 
         stage = MultiCharStage(self._active_character_names, stage_offsets, backgrounds,
-                               performance.reset, report_scene_error)
+                               performance.reset, report_scene_error,
+                               bind_cast=lambda slots: apply_slots_payload(slots, stage_change=True))
         performance.visible = stage.visible
 
         def draw_stage_actors():
@@ -1281,9 +1348,22 @@ class Live2DModule:
             context = command.get("scene_context") or {}
             messages = context.get("messages") or [command.get("turn", {})]
             index = context.get("index", 0)
+            opening = context.get("opening_slots")
             action = command.get("action")
             transition_preview = False
-            if action == "transition":
+            if action == "swap":
+                target = stage.resolve(messages, index, opening_slots=opening)
+                source = dict(target, slots=command["previous_slots"],
+                              visible_characters=stage.slot_names(command["previous_slots"]))
+                if stage.state != source:
+                    stage.show(source)
+                stage.begin(target, None, walk=True)
+                transition_preview = stage.busy
+                tell_qt_this_turn_finish_queue.put({
+                    "type": "multi_char_transition", "session": performance.session,
+                    "sequence": performance.sequence, "playing": transition_preview,
+                })
+            elif action == "transition":
                 from live2d_support.multi_char_scene import resolve_bgm
                 bgm = resolve_bgm(messages, index)
                 if bgm:
@@ -1291,8 +1371,8 @@ class Live2DModule:
                         "type": "multi_char_bgm", "session": playback.session, "revision": playback.revision,
                         "preview_session": performance.session, "config": bgm, "entry": False,
                     })
-                stage.show(stage.resolve(messages, index - 1))
-                target = stage.resolve(messages, index)
+                stage.show(stage.resolve(messages, index - 1, opening_slots=opening))
+                target = stage.resolve(messages, index, opening_slots=opening)
                 stage.begin(target, messages[index].get("scene_before"), first=index == 0)
                 transition_preview = stage.busy
                 tell_qt_this_turn_finish_queue.put({
@@ -1300,7 +1380,7 @@ class Live2DModule:
                     "sequence": performance.sequence, "playing": transition_preview,
                 })
             else:
-                stage.show(stage.resolve(messages, index))
+                stage.show(stage.resolve(messages, index, opening_slots=opening))
                 turn = command.get("turn") or messages[index]
                 overlay.set_text(str(turn.get("character_name") or ""),
                                  str(turn.get("text") or ""), str(turn.get("translation") or ""))
@@ -1409,6 +1489,8 @@ class Live2DModule:
                                 playback.stop()
                                 performance.resources.clear()
                                 apply_slots_payload(slots_payload)
+                            if isinstance(x.get("cast_opening"), dict):
+                                stage.opening_slots = x["cast_opening"]
                             if not x.get("preserve_scene", False) and playback.revision >= 0:
                                 overlay.set_text("", "")
                         playback.command(x)
@@ -1449,7 +1531,7 @@ class Live2DModule:
                             show_preview_scene(x)
                         performance.command(x)
                         if action == "enter" or valid_session:
-                            if action in ("enter", "scene", "transition"):
+                            if action in ("enter", "scene", "transition", "swap"):
                                 show_preview_scene(x)
                             elif action == "stop":
                                 transition_preview = False
@@ -1492,7 +1574,8 @@ class Live2DModule:
                         stage.cancel()
                         if layout_editing:
                             exit_layout_edit_mode()
-                        apply_slots_payload(x)
+                        if not refresh_script_models(x):
+                            apply_slots_payload(x)
                     elif message_type == "mask_action":
                         from live2d_support.mask_actions import mask_actions
                         action = x.get("action")
