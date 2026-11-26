@@ -740,6 +740,12 @@ body,
   place-items: center;
   background: var(--card);
 }
+.setup-loading[data-covering-home] {
+  /* 覆盖已布局的主页，让 Live2D 在原尺寸的画布上绘制首帧。 */
+  position: absolute;
+  inset: 0;
+  z-index: 120;
+}
 .setup-loading > div {
   display: flex;
   flex-direction: column;

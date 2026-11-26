@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 import { createBackendClient } from '@/backend/client.js'
 import { desktopHost } from '../host/desktop.js'
 import { WelcomePage } from '../features/onboarding/WelcomePage.jsx'
@@ -7,6 +7,8 @@ import { SetupPage, SetupLoading } from '../features/setup/SetupPage.jsx'
 import { CharacterPreview } from '../features/onboarding/CharacterPreview.jsx'
 import { LegacyPage } from '../features/setup/LegacyPage.jsx'
 import { HomePage } from '../features/home/HomePage.jsx'
+
+const stageStartupLimitMs = 600
 
 async function connectBackend() {
   return createBackendClient(await desktopHost().getBackendConnection())
@@ -42,14 +44,40 @@ function AppContent() {
       })
   )
   const state = useSyncExternalStore(flow.subscribe, flow.getSnapshot)
+  const [stageRevealed, setStageRevealed] = useState(false)
+  const revealStage = useCallback(() => setStageRevealed(true), [])
+  const home = state.view === 'home'
+  const startupPending = home && state.restoringHome && !stageRevealed
+  useLayoutEffect(() => {
+    if (!startupPending) return
+    const deadline = setTimeout(revealStage, stageStartupLimitMs)
+    return () => clearTimeout(deadline)
+  }, [startupPending, revealStage])
   useEffect(() => {
     void flow.mount()
     return () => flow.dispose()
   }, [flow])
-  if (state.view === 'loading' || state.view === 'error')
-    return <SetupLoading problem={state.problem} onRetry={flow.retry} />
-  if (state.view === 'home')
-    return <HomePage client={flow.client} setup={flow} setupState={state} />
+  if (home || state.view === 'loading' || state.view === 'error')
+    return (
+      <>
+        {home && (
+          <HomePage
+            client={flow.client}
+            setup={flow}
+            setupState={state}
+            startupPending={startupPending}
+            onStartupReady={revealStage}
+          />
+        )}
+        {(!home || startupPending) && (
+          <SetupLoading
+            coveringHome={startupPending}
+            problem={state.problem}
+            onRetry={flow.retry}
+          />
+        )}
+      </>
+    )
   const welcome = state.view === 'welcome'
   let content = <SetupPage state={state} flow={flow} />
   if (welcome)

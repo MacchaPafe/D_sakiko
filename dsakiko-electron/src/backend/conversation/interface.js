@@ -351,6 +351,14 @@ export class Conversations {
   }
 
   /**
+   * @param {string} chatId 已保存的对话。
+   * @returns {Promise<import('../../shared/contracts/common.js').AssetRef | null>} 可在完整对话快照送达前加载的背景。
+   */
+  async getStageBackground(chatId) {
+    return this.store.getStageBackground(chatId)
+  }
+
+  /**
    * 解析对话当前的演出场景配置，并在场景资源受保护的期间执行指定操作。
    * @template T
    * @param {import('../../shared/contracts/conversation.js').Chat} chat 对话数据。

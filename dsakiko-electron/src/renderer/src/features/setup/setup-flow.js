@@ -4,6 +4,7 @@
  * @typedef {{groups: Array<{id: string, options: ResourceOption[]}>, selectionDownloadBytes: number|null}} ResourceCatalog
  * @typedef {object} SetupFlowState
  * @property {'loading'|'welcome'|'legacy'|'import'|'resources'|'download'|'home'|'error'} view 当前页面；快速开始返回前需确认后端撤回准备身份。
+ * @property {boolean} restoringHome 启动时直接恢复已初始化的主页。
  * @property {{sourceId: string, name: string}|null} legacySource 宿主授权的旧版目录。
  * @property {object|null} legacyScan 扫描摘要，不包含来源文件内容或凭据。
  * @property {Record<string, boolean>} legacyInclude 整类导入选择。
@@ -48,6 +49,7 @@ export class SetupFlow {
     /** @type {SetupFlowState} */
     this.state = {
       view: 'loading',
+      restoringHome: false,
       onboarding: null,
       catalog: null,
       managedCatalog: null,
@@ -87,7 +89,7 @@ export class SetupFlow {
   mount = async () => {
     const generation = ++this.generation
     this.active = true
-    this.update({ view: 'loading', pending: null, problem: null })
+    this.update({ view: 'loading', restoringHome: false, pending: null, problem: null })
     try {
       const client = await this.connect()
       if (!this.current(generation)) {
@@ -116,7 +118,8 @@ export class SetupFlow {
         initialView = 'welcome'
       this.update({
         onboarding,
-        view: initialView
+        view: initialView,
+        restoringHome: initialView === 'home'
       })
       const downloads = jobs.filter(
         (job) =>

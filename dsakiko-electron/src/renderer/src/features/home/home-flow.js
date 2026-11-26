@@ -14,6 +14,7 @@ import { AttachmentDraft } from './attachments.js'
  * @property {import('../../../../shared/contracts/conversation.js').ChatSummary[]} chats 正式对话列表。
  * @property {HomeTarget} target 当前导航身份。
  * @property {import('../../../../shared/contracts/conversation.js').ConversationSnapshot|null} snapshot 当前对话的权威观察快照。
+ * @property {import('../../../../shared/contracts/common.js').AssetRef|null|undefined} restoredBackground 首次恢复时已提交的背景；undefined 表示尚未读取。
  * @property {import('../../../../shared/contracts/settings.js').GlobalSettings|null} settings 全局设置。
  * @property {import('../../../../shared/contracts/models.js').ConnectionDefinition[]} connections 不含凭据的连接目录。
  * @property {import('../../../../shared/contracts/notices.js').Notice[]} notices 按持久顺序排列的通知。
@@ -58,6 +59,7 @@ export class HomeFlow {
       chats: [],
       target: { characterId: null, chatId: null, tab: 'single-character' },
       snapshot: null,
+      restoredBackground: undefined,
       settings: null,
       connections: [],
       builtinConnection: false,
@@ -91,13 +93,15 @@ export class HomeFlow {
       } catch {
         /* 损坏的导航不影响正式数据。 */
       }
-      // 先订阅上次的对话，让背景资源与角色、模型目录并行加载。
+      // 背景、完整对话和主页目录并行恢复。
       if (
         typeof target?.chatId === 'string' &&
         target.chatId &&
         ['single-character', 'scripted-dialogue'].includes(target.tab)
-      )
+      ) {
         this.select(target)
+        void this.restoreBackground(target.chatId, this.epoch)
+      }
       const restoredEpoch = this.epoch
       await this.refresh()
       if (this.closed || epoch !== this.mountEpoch) return
@@ -132,6 +136,16 @@ export class HomeFlow {
       this.update({ loading: false })
     } catch (error) {
       if (epoch === this.mountEpoch) this.update({ loading: false, problem: error.message })
+    }
+  }
+  async restoreBackground(chatId, epoch) {
+    try {
+      const background = await this.client.conversations.getStageBackground(chatId)
+      // 快照可能已包含更新的选择，切换对话也会使先前的读取失效。
+      if (epoch === this.epoch && !this.state.snapshot)
+        this.update({ restoredBackground: background })
+    } catch {
+      // 预读失败时，完整快照仍可提供背景和对话状态。
     }
   }
   async refresh() {
@@ -237,6 +251,7 @@ export class HomeFlow {
     this.update({
       target,
       snapshot: null,
+      restoredBackground: undefined,
       draft: input.text,
       draftBackground: target.chatId ? null : (input.background ?? null),
       draftOutfit: target.chatId ? null : (input.outfit ?? null),

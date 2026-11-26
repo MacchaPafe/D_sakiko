@@ -10,7 +10,13 @@ export class StageActor {
     this.layouts = new StageLayouts()
     this.epoch = 0
     this.visible = true
-    this.state = { shownOutfitKey: null, failedOutfitKey: null, loading: false, hasModel: false }
+    this.state = {
+      shownOutfitKey: null,
+      failedOutfitKey: null,
+      loading: false,
+      hasModel: false,
+      modelSettled: false
+    }
   }
 
   mount(element, referenceWidth, sharedApp) {
@@ -38,7 +44,13 @@ export class StageActor {
     this.desiredPlanKey = null
     this.direction = null
     this.failedModel = null
-    this.update({ loading: false, problem: null, failedOutfitKey: null, canRetryModel: false })
+    this.update({
+      loading: false,
+      modelSettled: false,
+      problem: null,
+      failedOutfitKey: null,
+      canRetryModel: false
+    })
   }
   suspendModel() {
     this.awaitingModel = true
@@ -55,16 +67,24 @@ export class StageActor {
   async showModel(presentation) {
     const asset = presentation?.model ?? null
     const key = stageModelKey(presentation)
-    if (!key && !this.surface?.model && !this.pendingModel && !this.state.failedOutfitKey)
+    if (!key && !this.surface?.model && !this.pendingModel && !this.state.failedOutfitKey) {
+      if (!this.state.modelSettled) this.update({ modelSettled: true })
       return false
+    }
     if (this.pendingModel?.key === key) return this.pendingModel.promise
     if (key && this.state.failedOutfitKey === key) return false
     this.cancelModelLoad()
     if (key === this.state.shownOutfitKey && this.surface.model) {
       this.awaitingModel = false
       this.failedModel = null
-      if (this.state.loading || this.state.canRetryModel)
-        this.update({ loading: false, problem: null, canRetryModel: false, failedOutfitKey: null })
+      if (!this.state.modelSettled || this.state.loading || this.state.canRetryModel)
+        this.update({
+          loading: false,
+          modelSettled: true,
+          problem: null,
+          canRetryModel: false,
+          failedOutfitKey: null
+        })
       return true
     }
     this.failedModel = null
@@ -75,6 +95,7 @@ export class StageActor {
       this.modelKey = null
       this.update({
         loading: false,
+        modelSettled: true,
         hasModel: false,
         problem: null,
         canRetryModel: false,
@@ -84,7 +105,13 @@ export class StageActor {
       return false
     }
     this.suspendModel()
-    this.update({ loading: true, problem: null, canRetryModel: false, failedOutfitKey: null })
+    this.update({
+      loading: true,
+      modelSettled: false,
+      problem: null,
+      canRetryModel: false,
+      failedOutfitKey: null
+    })
     const layoutKey = this.layoutScope ? JSON.stringify([this.layoutScope, key]) : asset.id
     const pending = { key, abort: new AbortController() }
     const current = () => !this.closed && this.pendingModel === pending
@@ -127,7 +154,7 @@ export class StageActor {
         this.release(lease)
         if (current()) {
           this.pendingModel = null
-          this.update({ loading: false })
+          this.update({ loading: false, modelSettled: true })
         }
       }
     })()

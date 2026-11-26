@@ -16,6 +16,10 @@
   --primary: #aeefff;
   --primary-foreground: #24374a;
   --glass-composer: rgb(42 45 69 / 94%);
+  --story-rail-top: calc(var(--window-titlebar-height, 0px) + 12px);
+  --story-rail-right: clamp(14px, 2vw, 28px);
+  --story-rail-width: clamp(48px, 4.4vw, 52px);
+  --story-rail-radius: calc(var(--story-rail-width) / 2);
   color: var(--foreground);
   background: #242439;
   outline: none;
@@ -220,42 +224,55 @@
   display: none;
 }
 .story-rail {
-  --rail-width: clamp(50px, 4.7vw, 72px);
   position: absolute;
   z-index: 4;
-  top: calc(var(--window-titlebar-height, 0px) + 12px);
-  right: clamp(14px, 3.4vw, 68px);
-  width: var(--rail-width);
+  top: var(--story-rail-top);
+  right: var(--story-rail-right);
+  width: var(--story-rail-width);
+  max-height: calc(100% - var(--story-rail-top) - 12px);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 5px;
   app-region: no-drag;
+}
+.story-rail:has(.story-strip:not([hidden])) {
+  /* 底色从圆心开始连续向下，工具项从圆钮下缘开始滚动。 */
+  background: linear-gradient(
+    transparent var(--story-rail-radius),
+    rgb(195 200 225 / 72%) var(--story-rail-radius)
+  );
+  border-radius: 0 0 var(--story-rail-radius) var(--story-rail-radius);
 }
 .story-rail button {
   cursor: pointer;
 }
-.story-strip {
-  width: 100%;
+.story-strip:not([hidden]) {
   display: flex;
+}
+.story-strip {
   flex-direction: column;
-  overflow: hidden;
-  border-radius: 40px;
-  background: linear-gradient(110deg, rgb(205 204 223 / 94%), rgb(161 163 190 / 96%));
-  box-shadow: 0 2px 9px #27254042;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-bottom: 8px;
+  border-radius: 0 0 var(--story-rail-radius) var(--story-rail-radius);
 }
 .story-strip button {
+  flex: none;
   width: 100%;
   position: relative;
   display: grid;
   place-content: center;
   justify-items: center;
   gap: 2px;
-  min-height: clamp(48px, 8vh, 86px);
-  padding: 6px 2px;
-  color: #424866;
-  font-size: clamp(11px, 0.85vw, 14px);
+  min-height: clamp(48px, 7.2vh, 62px);
+  padding: 6px 1px;
+  color: #212843;
+  font-size: clamp(11px, 0.82vw, 12px);
   font-weight: 600;
+}
+.story-strip button svg {
+  width: 20px;
+  height: 20px;
 }
 .story-strip button + button::before {
   content: '';
@@ -268,15 +285,15 @@
 }
 .story-strip button:hover:not(:disabled),
 .story-strip button[aria-expanded='true'] {
-  background: #767b9a55;
+  background: rgb(255 255 255 / 18%);
 }
 .story-strip button:disabled {
   opacity: 0.5;
   cursor: default;
 }
 .story-strip .story-auto[aria-pressed='true'] {
-  background: #6f768f;
-  color: #c3f9ff;
+  background: rgb(51 64 98 / 70%);
+  color: #e3faff;
   text-shadow: 0 0 5px #6fedff;
   opacity: 1;
 }
@@ -291,7 +308,7 @@
   right: 5px;
   color: white;
 }
-.story-restore,
+.story-rail-toggle,
 .story-entry-action {
   border: 1px solid #8786b4;
   background: linear-gradient(140deg, #353a60, #525c9e);
@@ -303,9 +320,13 @@
   display: grid;
   place-items: center;
 }
-.story-restore {
-  width: var(--rail-width);
+.story-rail-toggle {
+  flex: none;
+  width: 100%;
   aspect-ratio: 1;
+}
+.story-rail-toggle:hover {
+  background: #565d91;
 }
 .story-rail button:focus-visible,
 .story-caption button:focus-visible,
@@ -315,8 +336,8 @@
 }
 .home-page[data-story] .stage-toolbar {
   left: auto;
-  right: calc(clamp(14px, 3.4vw, 68px) + clamp(50px, 4.7vw, 72px) + 8px);
-  top: calc(var(--window-titlebar-height, 0px) + 76px);
+  right: calc(var(--story-rail-right) + var(--story-rail-width) + 8px);
+  top: calc(var(--story-rail-top) + var(--story-rail-width));
   bottom: auto;
   background: #b6b7cded;
   color: #353b5d;
@@ -414,10 +435,6 @@
   }
 }
 
-.story-restore svg {
-  width: 48%;
-  height: 48%;
-}
 .home-page[data-story] .home-bottom > .interaction-card {
   order: -1;
 }

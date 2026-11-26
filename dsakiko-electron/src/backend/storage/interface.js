@@ -100,6 +100,7 @@ export class ChatStore {
       characterNames: historicalCharacterNames(chat),
       mode: chat.mode,
       turnCount: chat.turns.length,
+      stageBackground: chat.meta.settings?.presentation?.background ?? null,
       reminderIds: chat.meta.reminders.map((item) => item.id)
     }
   }
@@ -134,6 +135,7 @@ export class ChatStore {
       if (changed) await writeJson(this.manifest, index)
       return index.entries.map((entry) => {
         const result = copy(entry)
+        delete result.stageBackground
         delete result.reminderIds
         return result
       })
@@ -147,6 +149,22 @@ export class ChatStore {
    */
   async load(chatId) {
     return this.queue.run('index', () => this.loadCurrent(chatId))
+  }
+
+  /**
+   * @param {string} chatId 对话存档 ID。
+   * @returns {Promise<import('../../shared/contracts/common.js').AssetRef | null>} 已提交的背景；旧索引从当前版本存档读取。
+   */
+  async getStageBackground(chatId) {
+    return this.queue.run('index', async () => {
+      const entry = (await this.index()).entries.find((item) => item.id === chatId)
+      requireValue(entry, 'chat_unavailable', '对话不存在或需要恢复存档。')
+      // 背景与存档版本一起提交，启动时无需等整份历史恢复并创建演出序列。
+      if (Object.hasOwn(entry, 'stageBackground')) return entry.stageBackground
+      const loaded = await this.loadCurrent(chatId)
+      requireValue(loaded.status === 'loaded', 'chat_unavailable', '对话不存在或需要恢复存档。')
+      return loaded.chat.meta.settings?.presentation?.background ?? null
+    })
   }
 
   /** 在存储锁内把已提交快照交给运行 owner，避免加载与删除之间失去保护。 */

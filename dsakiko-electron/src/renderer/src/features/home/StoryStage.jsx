@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   BookOpenText,
   Drama,
@@ -81,59 +81,55 @@ export function StoryRail({
   onReplay,
   onSetup
 }) {
-  let replayLabel = theatre ? '回放本场' : '回放本轮'
-  if (replaying) replayLabel = '停止回放'
+  const stripId = useId()
+  const toggleLabel = expanded ? '收起工具栏' : '展开工具栏'
+  let replayLabel = '回放'
+  if (replaying) replayLabel = '停止'
   return (
     <nav className="story-rail" aria-label="剧情舞台工具栏">
       <button
-        className="story-restore"
-        onClick={onExit}
-        aria-label="还原舞台"
-        title="还原舞台 (Esc)"
+        className="story-rail-toggle"
+        onClick={onExpand}
+        aria-controls={stripId}
+        aria-expanded={expanded}
+        aria-label={toggleLabel}
+        title={toggleLabel}
       >
-        <Minimize />
+        {expanded ? <X aria-hidden="true" /> : <Menu aria-hidden="true" />}
       </button>
-      <div className="story-strip">
-        <button
-          onClick={onExpand}
-          aria-expanded={expanded}
-          aria-label={expanded ? '收起工具栏' : '展开工具栏'}
-        >
-          {expanded ? <X /> : <Menu />}
-          <span>工具</span>
+      <div className="story-strip" id={stripId} hidden={!expanded}>
+        <button onClick={onReplay} disabled={!canReplay && !replaying}>
+          {replaying ? <Square /> : <Glyph kind="replay" />}
+          <span>{replayLabel}</span>
         </button>
-        {expanded && (
-          <>
-            <button onClick={onReplay} disabled={!canReplay && !replaying}>
-              {replaying ? <Square /> : <Glyph kind="replay" />}
-              <span>{replayLabel}</span>
-            </button>
-            <button
-              onClick={canToggleAuto ? onAuto : undefined}
-              aria-disabled={!canToggleAuto}
-              aria-pressed={auto}
-              className="story-auto"
-              title={canToggleAuto ? '回放时自动推进台词' : '新回复自动播放，结束后恢复回放设置'}
-            >
-              <Glyph kind="auto" />
-              {!canToggleAuto && <LockKeyhole className="story-lock" />}
-              <span>自动</span>
-            </button>
-            <button onClick={onTools} aria-expanded={toolsOpen}>
-              <Settings2 />
-              <span>舞台</span>
-            </button>
-            {onSetup && (
-              <button onClick={onSetup}>
-                <Drama />
-                <span>剧场设定</span>
-              </button>
-            )}
-          </>
+        <button
+          onClick={canToggleAuto ? onAuto : undefined}
+          aria-disabled={!canToggleAuto}
+          aria-pressed={auto}
+          className="story-auto"
+          title={canToggleAuto ? '回放时自动推进台词' : '新回复自动播放，结束后恢复回放设置'}
+        >
+          <Glyph kind="auto" />
+          {!canToggleAuto && <LockKeyhole className="story-lock" />}
+          <span>自动</span>
+        </button>
+        <button onClick={onTools} aria-expanded={toolsOpen}>
+          <Settings2 />
+          <span>舞台</span>
+        </button>
+        {onSetup && (
+          <button onClick={onSetup}>
+            <Drama />
+            <span>剧场设定</span>
+          </button>
         )}
         <button onClick={onLog} aria-label="剧情记录">
           <BookOpenText />
           <span>记录</span>
+        </button>
+        <button onClick={onExit} title="放大 (Esc)">
+          <Minimize />
+          <span>退出</span>
         </button>
       </div>
     </nav>
@@ -149,9 +145,7 @@ export function StoryCaption({
   writable,
   editing,
   toggleEditor,
-  draft,
-  replaying,
-  stop
+  draft
 }) {
   let reply = '回复'
   if (editing) reply = '收起回复'
@@ -177,11 +171,6 @@ export function StoryCaption({
         </section>
       )}
       <div className="story-caption-actions">
-        {replaying && (
-          <button aria-label="停止回放" title="停止回放" onClick={stop}>
-            <Square size={17} />
-          </button>
-        )}
         {writable && (
           <button
             className="story-pen"

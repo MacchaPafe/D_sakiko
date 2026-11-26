@@ -56,6 +56,24 @@ function chat(resources) {
   }
 }
 
+test('舞台背景随存档版本提交，也兼容没有背景字段的旧索引', async () => {
+  const { assets, store } = await fixture()
+  const { asset } = await assets.importAsset(source('stage.png'), 'draft', 'chat-image')
+  const draft = chat([])
+  draft.meta.settings = { presentation: { background: asset } }
+  const saved = await store.save(draft)
+  expect(await store.getStageBackground(saved.id)).toEqual(asset)
+
+  const index = JSON.parse(await readFile(store.manifest, 'utf8'))
+  delete index.entries[0].stageBackground
+  await writeFile(store.manifest, JSON.stringify(index))
+  expect(await store.getStageBackground(saved.id)).toEqual(asset)
+
+  saved.meta.settings.presentation.background = null
+  await store.save(saved)
+  expect(await store.getStageBackground(saved.id)).toBeNull()
+})
+
 test('三个目录统一登记，重启后按引用读取，公开信息不包含路径', async () => {
   const { roots, assets } = await fixture()
   const image = await assets.importAsset(source('picture.png'), 'draft', 'chat-image')

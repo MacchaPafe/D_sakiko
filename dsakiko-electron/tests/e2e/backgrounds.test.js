@@ -100,6 +100,20 @@ test('本地多选导入、后台预览、直接应用与移除后保留对话�
     await picker.waitFor({ state: 'hidden' })
     const asset = await saved()
     expect(asset?.id).toBeTruthy()
+    // 完整对话的首条快照延后交付，舞台仍应先显示已保存的自定义背景。
+    const resumeSnapshots = Promise.withResolvers()
+    const firstSnapshot = Promise.withResolvers()
+    await page.routeWebSocket(/\/api\/v1\/events\?/, (socket) => {
+      const server = socket.connectToServer()
+      server.onMessage(async (message) => {
+        const event = JSON.parse(message.toString())
+        if (event.snapshot?.chat?.id === chatId) {
+          firstSnapshot.resolve()
+          await resumeSnapshots.promise
+        }
+        socket.send(message)
+      })
+    })
     // 从第一帧观察重载，资源加载期间也不应画出内置背景。
     await page.addInitScript(() => {
       window.stageBackgrounds = []
@@ -110,11 +124,56 @@ test('本地多选导入、后台预览、直接应用与移除后保留对话�
       }
       requestAnimationFrame(sample)
     })
-    await page.reload()
+    const home = page.locator('.home-page')
+    const cover = page.locator('.setup-loading[data-covering-home]')
+    let releaseBackground = Promise.withResolvers()
+    await page.route(
+      (url) => /^\/api\/v1\/assets\/[^/]+$/.test(url.pathname),
+      async (route) => {
+        if (route.request().resourceType() === 'image') await releaseBackground.promise
+        await route.continue()
+      }
+    )
+    const modelRequested = Promise.withResolvers()
+    const releaseModel = Promise.withResolvers()
+    await page.route(/\/api\/v1\/assets\/[^/]+\/.+\.model3?\.json$/, async (route) => {
+      modelRequested.resolve()
+      await releaseModel.promise
+      await route.continue()
+    })
+    const clockStart = Date.now()
+    await page.clock.install({ time: clockStart })
+    await page.clock.pauseAt(clockStart + 1000)
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await cover.waitFor({ state: 'attached' })
+    expect(await home.evaluate((element) => element.inert)).toBe(true)
+    await modelRequested.promise
+    await page.clock.runFor(32)
+    releaseBackground.resolve()
     await expect
       .poll(() => image.evaluateAll((images) => images.some((img) => img.naturalWidth > 0)))
       .toBe(true)
     expect(await page.evaluate(() => [...new Set(window.stageBackgrounds)])).toEqual(['none'])
+    expect(await cover.count()).toBe(1)
+    releaseModel.resolve()
+    await cover.waitFor({ state: 'detached' })
+    expect(await home.evaluate((element) => element.inert)).toBe(false)
+    await firstSnapshot.promise
+    resumeSnapshots.resolve()
+
+    // 背景请求仍在等待时，达到上限也要让主页可操作，随后继续完成图片加载。
+    releaseBackground = Promise.withResolvers()
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await cover.waitFor({ state: 'attached' })
+    await page.clock.runFor(599)
+    expect(await cover.count()).toBe(1)
+    await page.clock.runFor(1)
+    await cover.waitFor({ state: 'detached' })
+    expect(await home.evaluate((element) => element.inert)).toBe(false)
+    releaseBackground.resolve()
+    await page.clock.resume()
+    await expect.poll(() => image.evaluate((img) => img.naturalWidth)).toBeGreaterThan(0)
+
     await trigger.click()
     await image.waitFor({ state: 'visible' })
     await builtinTile.hover()

@@ -56,9 +56,14 @@ function usePicture(client, id, onlineKey) {
   return result?.key === key ? result : null
 }
 
-/** @param {object} props 当前对话或悬停预览的图片。 @returns {import('react').ReactElement|null} 位于透明角色画布下方的背景层。 */
-export function StageBackdrop({ client, asset, hidden = false, story = false }) {
-  const picture = usePicture(client, asset?.id, null)
+/**
+ * @param {{client: import('../../backend/client.js').BackendClient, asset?: import('../../../../shared/contracts/common.js').AssetRef|null, hidden?: boolean, story?: boolean, onStartupReady?: (id: string|null) => void}} props 舞台背景及普通舞台首张背景的解码通知。
+ * @returns {import('react').ReactElement|null} 位于透明角色画布下方的背景层。
+ */
+export function StageBackdrop({ client, asset, hidden = false, story = false, onStartupReady }) {
+  const assetId = asset?.id ?? null
+  const picture = usePicture(client, assetId, null)
+  const image = useRef(null)
   const [failedUrl, setFailedUrl] = useState(null)
   const failed = picture?.error || (picture?.url && failedUrl === picture.url)
   let url = picture?.url
@@ -66,10 +71,28 @@ export function StageBackdrop({ client, asset, hidden = false, story = false }) 
   function imageFailed() {
     if (url && url !== defaultBackgroundUrl) setFailedUrl(url)
   }
+  useEffect(() => {
+    if (!onStartupReady || story || (assetId && !url)) return
+    let current = true
+    // 内置背景由 CSS 绘制；复用同一个 URL 的浏览器资源，等到像素可用再揭开 Logo。
+    const source = image.current ?? new Image()
+    if (!url) source.src = defaultBackgroundUrl
+    function ready() {
+      if (current) onStartupReady(assetId)
+    }
+    void source.decode().then(ready, () => {
+      // 自定义图失败后由 onError 切到内置图；内置图失败时可直接展示舞台底色。
+      if (!url || url === defaultBackgroundUrl) ready()
+    })
+    return () => {
+      current = false
+    }
+  }, [assetId, url, story, onStartupReady])
   if (!url) return null
   if (story) return <StoryBackdrop key={url} url={url} hidden={hidden} onError={imageFailed} />
   return (
     <img
+      ref={image}
       className="stage-backdrop"
       hidden={hidden}
       src={url}

@@ -64,7 +64,7 @@ import {
 import './home.css'
 
 const storyControls =
-  'button, a, input, textarea, select, label, summary, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="menu"], [role="dialog"], [popover], .home-composer'
+  'button, a, input, textarea, select, label, summary, [contenteditable]:not([contenteditable="false"]), [role="button"], [role="menu"], [role="dialog"], [popover], .home-composer, .story-rail'
 
 /** @typedef {{kind: 'characters', initialId?: string, focusAffiliation?: boolean, initialTab?: 'roles'|'personas', initialPersonaId?: string} | {kind: 'settings', entry: {section: string, target?: string}} | {kind: 'resource', target: string, formId?: string} | {kind: 'outfits', target: {characterId: string, formId: string, tab?: string, section?: string, backgroundTab?: string}} | {kind: 'theatre', chat: import('../../../../shared/contracts/conversation.js').Chat|null} | {kind: 'downloads', category: 'all'|'resources'|'outfits'|'backgrounds'} | {kind: 'outfit-detail', render: (onClose: () => void) => import('react').ReactNode}} HomeDialogContent */
 /** @typedef {HomeDialogContent & import('../../components/ui/use-dialog-navigation.js').DialogPage} HomeDialogPage */
@@ -589,8 +589,8 @@ function Composer({
   )
 }
 
-/** @param {{client: import('../../backend/client.js').BackendClient, setup: object, setupState: object}} props 应用共享连接和后台任务。 @returns {import('react').ReactElement} 正式主页，历史悬浮于稳定舞台之上。 */
-export function HomePage({ client, setup, setupState }) {
+/** @param {{client: import('../../backend/client.js').BackendClient, setup: object, setupState: object, startupPending: boolean, onStartupReady: () => void}} props 应用连接、后台任务和启动封面。 @returns {import('react').ReactElement} 正式主页，历史悬浮于稳定舞台之上。 */
+export function HomePage({ client, setup, setupState, startupPending, onStartupReady }) {
   const [subtitles] = useState(() => new SubtitleProgress())
   const [flow] = useState(() => new HomeFlow(client))
   const state = useSyncExternalStore(flow.subscribe, flow.getSnapshot)
@@ -622,10 +622,16 @@ export function HomePage({ client, setup, setupState }) {
     setBackgroundTarget(null)
     setPreviewBackground(null)
   }, [])
-  const currentBackground = state.target.chatId
-    ? state.snapshot?.chat.meta.settings.presentation.background
-    : state.draftBackground
-  const backgroundKnown = state.target.chatId ? Boolean(state.snapshot) : !state.loading
+  let currentBackground = state.draftBackground
+  if (state.target.chatId)
+    currentBackground = state.snapshot
+      ? state.snapshot.chat.meta.settings.presentation.background
+      : state.restoredBackground
+  const backgroundKnown = state.target.chatId
+    ? Boolean(state.snapshot) || currentBackground !== undefined
+    : !state.loading
+  const [decodedBackground, setDecodedBackground] = useState(undefined)
+  const backgroundId = currentBackground?.id ?? null
   const previewOnStage =
     activeDialog === 'outfits' || (!rootDialog && backgroundTarget === state.target)
   const stagePreview = previewOnStage ? previewBackground : null
@@ -648,6 +654,7 @@ export function HomePage({ client, setup, setupState }) {
     problem: null,
     loading: false,
     hasModel: false,
+    modelsSettled: false,
     canRetryModel: false,
     shownOutfitKey: null,
     failedOutfitKey: null,
@@ -663,6 +670,8 @@ export function HomePage({ client, setup, setupState }) {
     : null
   const canvas = useRef(null)
   const stage = useRef(null)
+  const stageTarget =
+    state.loading && !state.target.chatId && !state.target.characterId ? null : state.target
   const sequenceId = state.snapshot?.presentation.sequenceId ?? null
   const draftPresentation = state.draftOutfit?.model?.presentation
   const currentReplay = turnReplay?.chatId === state.target.chatId ? turnReplay : null
@@ -678,7 +687,7 @@ export function HomePage({ client, setup, setupState }) {
     return () => flow.dispose()
   }, [flow])
   useEffect(() => {
-    if (deleting || voiceInstall || rootDialog || (story && historyOpen)) return
+    if (startupPending || deleting || voiceInstall || rootDialog || (story && historyOpen)) return
     const platform = navigator.userAgentData?.platform ?? navigator.platform
     const isMac = platform.toLowerCase().startsWith('mac')
     function handleSettingsShortcut(event) {
@@ -703,7 +712,7 @@ export function HomePage({ client, setup, setupState }) {
     }
     window.addEventListener('keydown', handleSettingsShortcut)
     return () => window.removeEventListener('keydown', handleSettingsShortcut)
-  }, [deleting, voiceInstall, rootDialog, open, story, historyOpen])
+  }, [startupPending, deleting, voiceInstall, rootDialog, open, story, historyOpen])
   useEffect(() => {
     const controller = new StageController(client, setStageState, subtitles)
     stage.current = controller
@@ -735,17 +744,37 @@ export function HomePage({ client, setup, setupState }) {
     }
   }, [client, subtitles])
   useEffect(() => {
+    if (!stageTarget) return
     if (stage.current)
-      stage.current.player.suppressScript = isTheatre && flow.liveTheatre !== state.target
+      stage.current.player.suppressScript = isTheatre && flow.liveTheatre !== stageTarget
     void stage.current?.select(
-      state.target.characterId,
-      state.target.chatId,
+      stageTarget.characterId,
+      stageTarget.chatId,
       sequenceId,
       draftPresentation,
       isTheatre,
       state.draftOutfit?.formId
     )
-  }, [state.target, flow, sequenceId, draftPresentation, isTheatre, state.draftOutfit?.formId])
+  }, [stageTarget, flow, sequenceId, draftPresentation, isTheatre, state.draftOutfit?.formId])
+  useEffect(() => {
+    if (
+      startupPending &&
+      !state.loading &&
+      stageState.modelsSettled &&
+      backgroundKnown &&
+      decodedBackground === backgroundId
+    ) {
+      onStartupReady()
+    }
+  }, [
+    startupPending,
+    state.loading,
+    stageState.modelsSettled,
+    backgroundKnown,
+    decodedBackground,
+    backgroundId,
+    onStartupReady
+  ])
   const now = useRevealClock(state.snapshot?.chat.meta.lotteries)
   const revealPending =
     state.snapshot?.chat.meta.lotteries?.some((item) => item.revealAt > now) ?? false
@@ -908,6 +937,7 @@ export function HomePage({ client, setup, setupState }) {
     stage.current?.setReadingLog(false)
     for (const popup of document.querySelectorAll(':popover-open')) popup.hidePopover()
     changeStageLayout(false)
+    setRailOpen(false)
     setToolsOpen(false)
     setHistoryOpen(false)
     setWriting(false)
@@ -1431,7 +1461,12 @@ export function HomePage({ client, setup, setupState }) {
   }
   return (
     <>
-      <main className="home-page" data-story={story || undefined} aria-label="数字小祥主页">
+      <main
+        className="home-page"
+        data-story={story || undefined}
+        aria-label="数字小祥主页"
+        inert={startupPending}
+      >
         <Tabs value={state.target.tab} onValueChange={flow.setTab} activationMode="manual" asChild>
           <aside className="home-sidebar">
             <div className="home-brand">
@@ -1570,6 +1605,7 @@ export function HomePage({ client, setup, setupState }) {
               client={client}
               asset={currentBackground}
               hidden={stagePreview?.builtin}
+              onStartupReady={startupPending ? setDecodedBackground : undefined}
             />
           )}
           {(stagePreview?.asset || (story && stagePreview?.builtin)) && (
@@ -1696,8 +1732,6 @@ export function HomePage({ client, setup, setupState }) {
                 editing={editorVisible}
                 toggleEditor={toggleEditor}
                 draft={state.draft}
-                replaying={replaying}
-                stop={() => stage.current?.stopReplay()}
               />
             ) : (
               <Subtitle

@@ -6,7 +6,7 @@ import { stageModelKey } from '../../performance/stage-layout.js'
 import { isReplayableDialogue, lastDialogueEntry } from '../../../../shared/chat-history.js'
 
 /** @typedef {import('../../../../shared/contracts/presentation.js').ReplayMaterials} ReplayMaterials */
-/** @typedef {{text: string, name: string, guideId: string|null, translation: string|null, canReplayLine: boolean, replayingLine: boolean, lineReplayError: string|null, problem: string|null, loading: boolean, hasModel: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null, sides: boolean[]|null}} StageState 本地字幕和模型状态，不替代后端历史。 */
+/** @typedef {{text: string, name: string, guideId: string|null, translation: string|null, canReplayLine: boolean, replayingLine: boolean, lineReplayError: string|null, problem: string|null, loading: boolean, hasModel: boolean, modelsSettled: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null, sides: boolean[]|null}} StageState 本地字幕和模型状态；modelsSettled 表示各模型均已绘制、确认缺省或明确失败。 */
 /** 逐字进度只通知字幕，避免每个字都重绘整页和侧栏。 */
 export class SubtitleProgress {
   count = 0
@@ -42,6 +42,7 @@ export class StageController {
       problem: null,
       loading: false,
       hasModel: false,
+      modelsSettled: false,
       canRetryModel: false,
       shownOutfitKey: null,
       failedOutfitKey: null,
@@ -65,6 +66,7 @@ export class StageController {
       ...states[0],
       loading: states.some((item) => item.loading),
       hasModel: states.some((item) => item.hasModel),
+      modelsSettled: states.every((item) => item.modelSettled),
       problem: failure?.problem ?? null,
       canRetryModel: Boolean(failure?.canRetryModel),
       actors: states.map((item) => ({ ...item }))
@@ -206,7 +208,7 @@ export class StageController {
       if (epoch !== this.epoch || this.closed) return
       await this.actors[0].showModel(presentation)
     } catch (error) {
-      if (epoch === this.epoch) this.update({ problem: error.message })
+      if (epoch === this.epoch) this.update({ problem: error.message, modelsSettled: true })
     }
   }
 
