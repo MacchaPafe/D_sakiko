@@ -1,6 +1,6 @@
 import { extractAssetReferences } from '../resources/references.js'
 import { encodeArchive, decodeArchive } from './portable-archive.js'
-import { lastDialogueEntry } from '../../shared/chat-history.js'
+import { dialogueSpeakerNames, lastDialogueEntry } from '../../shared/chat-history.js'
 import { historicalCharacterNames } from '../conversation/participants.js'
 import path from 'node:path'
 import { readFile, copyFile, readdir, unlink } from 'node:fs/promises'
@@ -17,6 +17,17 @@ import {
 } from '../core/support.js'
 
 /** @typedef {import('../../shared/contracts/conversation.js').Chat} Chat */
+/** @typedef {import('../../shared/contracts/conversation.js').StageSubtitle} StageSubtitle */
+
+/**
+ * @param {Chat} chat 台词所在的存档。
+ * @param {NonNullable<ReturnType<typeof lastDialogueEntry>>} entry 历史末句。
+ * @returns {Omit<StageSubtitle, 'text'>} 与正式舞台一致的历史译文和说话人。
+ */
+function subtitleDetails(chat, entry) {
+  const { personalityName, name } = dialogueSpeakerNames(chat, entry)
+  return { name: personalityName ?? name, translation: entry.line.translation ?? null }
+}
 
 /**
  * 对话存档管理模块，负责对话数据的持久化读写、版本校验、损坏恢复以及备份导入导出。
@@ -101,6 +112,7 @@ export class ChatStore {
       mode: chat.mode,
       turnCount: chat.turns.length,
       stageBackground: chat.meta.settings?.presentation?.background ?? null,
+      stageSubtitle: entry ? subtitleDetails(chat, entry) : null,
       reminderIds: chat.meta.reminders.map((item) => item.id)
     }
   }
@@ -136,6 +148,7 @@ export class ChatStore {
       return index.entries.map((entry) => {
         const result = copy(entry)
         delete result.stageBackground
+        delete result.stageSubtitle
         delete result.reminderIds
         return result
       })
@@ -164,6 +177,35 @@ export class ChatStore {
       const loaded = await this.loadCurrent(chatId)
       requireValue(loaded.status === 'loaded', 'chat_unavailable', '对话不存在或需要恢复存档。')
       return loaded.chat.meta.settings?.presentation?.background ?? null
+    })
+  }
+
+  /**
+   * @param {string} chatId 对话存档 ID。
+   * @returns {Promise<import('../../shared/contracts/conversation.js').StagePreview>} 同一存档版本的背景和可见末句。
+   */
+  async getStagePreview(chatId) {
+    return this.queue.run('index', async () => {
+      const entry = (await this.index()).entries.find((item) => item.id === chatId)
+      requireValue(entry, 'chat_unavailable', '对话不存在或需要恢复存档。')
+      if (
+        Object.hasOwn(entry, 'stageBackground') &&
+        Object.hasOwn(entry, 'stageSubtitle') &&
+        !(entry.lastReplyRevealAt > Date.now())
+      ) {
+        return {
+          background: entry.stageBackground,
+          subtitle: entry.stageSubtitle ? { text: entry.lastReply, ...entry.stageSubtitle } : null
+        }
+      }
+      // 旧索引没有舞台字幕字段。抽签尚未揭晓时，也要回到存档找上一句已经可见的台词。
+      const { status, chat } = await this.loadCurrent(chatId)
+      requireValue(status === 'loaded', 'chat_unavailable', '对话不存在或需要恢复存档。')
+      const reply = lastDialogueEntry(chat, Date.now())
+      return {
+        background: chat.meta.settings?.presentation?.background ?? null,
+        subtitle: reply ? { text: reply.line.text, ...subtitleDetails(chat, reply) } : null
+      }
     })
   }
 

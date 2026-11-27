@@ -56,22 +56,62 @@ function chat(resources) {
   }
 }
 
-test('舞台背景随存档版本提交，也兼容没有背景字段的旧索引', async () => {
+test('首屏舞台读取同一版本的背景和可见末句，兼容旧索引和未揭晓抽签', async () => {
   const { assets, store } = await fixture()
   const { asset } = await assets.importAsset(source('stage.png'), 'draft', 'chat-image')
   const draft = chat([])
+  const name = '保存时的人格'
   draft.meta.settings = { presentation: { background: asset } }
+  draft.turns = [
+    {
+      id: 'visible',
+      meta: {
+        characterContext: {
+          characters: [{ id: 'sakiko', forms: [{ id: 'form', displayName: name }] }]
+        }
+      },
+      messages: [
+        {
+          kind: 'assistant',
+          parts: [
+            {
+              kind: 'dialogue',
+              lines: [
+                { speakerId: 'sakiko', formId: 'form', text: 'おかえり', translation: '欢迎回来' }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
   const saved = await store.save(draft)
+  const preview = {
+    background: asset,
+    subtitle: { text: 'おかえり', translation: '欢迎回来', name }
+  }
   expect(await store.getStageBackground(saved.id)).toEqual(asset)
+  expect(await store.getStagePreview(saved.id)).toEqual(preview)
 
   const index = JSON.parse(await readFile(store.manifest, 'utf8'))
   delete index.entries[0].stageBackground
+  delete index.entries[0].stageSubtitle
   await writeFile(store.manifest, JSON.stringify(index))
   expect(await store.getStageBackground(saved.id)).toEqual(asset)
+  expect(await store.getStagePreview(saved.id)).toEqual(preview)
 
   saved.meta.settings.presentation.background = null
+  saved.meta.lotteries = [{ deliveredTurnId: 'hidden', revealAt: Date.now() + 60_000 }]
+  saved.turns.push({
+    id: 'hidden',
+    meta: {},
+    messages: [
+      { kind: 'assistant', parts: [{ kind: 'dialogue', lines: [{ text: '还没揭晓的结果' }] }] }
+    ]
+  })
   await store.save(saved)
   expect(await store.getStageBackground(saved.id)).toBeNull()
+  expect(await store.getStagePreview(saved.id)).toEqual({ ...preview, background: null })
 })
 
 test('三个目录统一登记，重启后按引用读取，公开信息不包含路径', async () => {

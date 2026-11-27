@@ -37,7 +37,7 @@ import { StageController, SubtitleProgress } from './stage-controller.js'
 import { resolveTheatreStageState } from './theatre-stage.js'
 import { TheatreActions, TheatreSetup } from './TheatreSetup.jsx'
 import { TheatrePositions } from './TheatrePositions.jsx'
-import { StageBackdrop, StageResources } from './BackgroundGallery.jsx'
+import { StageBackdrop, StageBackgroundPreview, StageResources } from './BackgroundGallery.jsx'
 import { StoryCaption, StoryRail, StoryLog } from './StoryStage.jsx'
 import { StageToolbar } from './StageToolbar.jsx'
 import { ToolMenu, ThinkingPicker, ThinkingConflict } from './ToolControls.jsx'
@@ -617,24 +617,27 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
   const activeDialog = frames.at(-1)?.page.kind
   const [voiceInstall, setVoiceInstall] = useState(false)
   const [backgroundTarget, setBackgroundTarget] = useState(null)
-  const [previewBackground, setPreviewBackground] = useState(null)
+  const [pickerPreview, setPickerPreview] = useState(null)
+  const [galleryPreview, setGalleryPreview] = useState(null)
   const closeBackground = useCallback(() => {
     setBackgroundTarget(null)
-    setPreviewBackground(null)
+    setPickerPreview(null)
   }, [])
   let currentBackground = state.draftBackground
   if (state.target.chatId)
     currentBackground = state.snapshot
       ? state.snapshot.chat.meta.settings.presentation.background
-      : state.restoredBackground
+      : state.restoredStage?.background
   const backgroundKnown = state.target.chatId
-    ? Boolean(state.snapshot) || currentBackground !== undefined
+    ? Boolean(state.snapshot || state.restoredStage)
     : !state.loading
   const [decodedBackground, setDecodedBackground] = useState(undefined)
   const backgroundId = currentBackground?.id ?? null
-  const previewOnStage =
-    activeDialog === 'outfits' || (!rootDialog && backgroundTarget === state.target)
-  const stagePreview = previewOnStage ? previewBackground : null
+  const stageCovered = Boolean(deleting || voiceInstall || (story && historyOpen))
+  const backgroundSuspended = Boolean(rootDialog || stageCovered)
+  let stagePreview = null
+  if (!stageCovered && activeDialog === 'outfits') stagePreview = galleryPreview
+  else if (!backgroundSuspended && backgroundTarget === state.target) stagePreview = pickerPreview
   const [wardrobeActor, setWardrobeActor] = useState(null)
   const [stageEditor, setStageEditor] = useState(null)
   const [replaceTarget, setReplaceTarget] = useState(null)
@@ -756,6 +759,13 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
       state.draftOutfit?.formId
     )
   }, [stageTarget, flow, sequenceId, draftPresentation, isTheatre, state.draftOutfit?.formId])
+  const now = useRevealClock(state.snapshot?.chat.meta.lotteries)
+  const revealPending =
+    state.snapshot?.chat.meta.lotteries?.some((item) => item.revealAt > now) ?? false
+  const restoredSubtitle = state.restoredStage?.subtitle ?? null
+  useEffect(() => {
+    stage.current?.setHistory(state.snapshot, restoredSubtitle)
+  }, [state.snapshot, restoredSubtitle, revealPending])
   useEffect(() => {
     if (
       startupPending &&
@@ -775,12 +785,6 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
     backgroundId,
     onStartupReady
   ])
-  const now = useRevealClock(state.snapshot?.chat.meta.lotteries)
-  const revealPending =
-    state.snapshot?.chat.meta.lotteries?.some((item) => item.revealAt > now) ?? false
-  useEffect(() => {
-    stage.current?.setHistory(state.snapshot)
-  }, [state.snapshot, revealPending])
   function retryStageModel() {
     stage.current?.retryModel(
       isTheatre ? theatreRoles.findIndex((item) => item.id === role?.id) : undefined
@@ -1400,9 +1404,9 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
             onClose={onDismiss}
             onDownloads={showStageDownloads}
             onApply={stageLocked ? null : applyManagedBackground}
-            onPreview={setPreviewBackground}
+            onPreview={setGalleryPreview}
             current={currentBackground}
-            active={id === frames.at(-1)?.id}
+            active={!stageCovered && id === frames.at(-1)?.id}
           >
             <OutfitManager
               client={client}
@@ -1550,12 +1554,22 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
                 onSettings={openSettings}
               />
               <div className="home-sidebar-actions">
-                <Button variant="ghost" className="home-settings" onClick={() => openCharacters()}>
+                <Button
+                  variant="ghost"
+                  className="home-settings"
+                  aria-haspopup="dialog"
+                  onClick={() => openCharacters()}
+                >
                   <Users size={16} />
                   角色管理
                 </Button>
                 <div className="home-sidebar-action-row">
-                  <Button variant="ghost" className="home-settings" onClick={() => openSettings()}>
+                  <Button
+                    variant="ghost"
+                    className="home-settings"
+                    aria-haspopup="dialog"
+                    onClick={() => openSettings()}
+                  >
                     <Settings size={16} />
                     设置
                   </Button>
@@ -1593,10 +1607,7 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
           ref={stageElement}
           tabIndex={-1}
           style={story ? undefined : stageThemeStyle}
-          data-builtin-background={
-            (!story && (stagePreview?.builtin || (backgroundKnown && !currentBackground))) ||
-            undefined
-          }
+          data-builtin-background={(!story && backgroundKnown && !currentBackground) || undefined}
           data-has-role-theme={!story && stageThemeStyle ? 'true' : undefined}
         >
           {backgroundKnown && (
@@ -1604,12 +1615,16 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
               story={story}
               client={client}
               asset={currentBackground}
-              hidden={stagePreview?.builtin}
               onStartupReady={startupPending ? setDecodedBackground : undefined}
             />
           )}
-          {(stagePreview?.asset || (story && stagePreview?.builtin)) && (
-            <StageBackdrop story={story} client={client} asset={stagePreview.asset} />
+          {stagePreview !== null && (
+            <StageBackgroundPreview
+              key={frames.at(-1)?.id ?? 'picker'}
+              story={story}
+              client={client}
+              candidate={stagePreview}
+            />
           )}
           <div
             className="home-canvas"
@@ -1674,7 +1689,6 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
               auto={liveAuto || auto}
               canToggleAuto={!liveAuto}
               onAuto={toggleStoryAuto}
-              theatre={isTheatre}
               canReplay={Boolean(replayTurnId)}
               replaying={replaying}
               onReplay={toggleStoryReplay}
@@ -1705,9 +1719,9 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
                   (!state.target.chatId || Boolean(state.snapshot)),
                 open: backgroundTarget === state.target,
                 close: closeBackground,
-                suspended: Boolean(rootDialog),
+                suspended: backgroundSuspended,
                 toggle: toggleBackgroundPicker,
-                onPreview: setPreviewBackground,
+                onPreview: setPickerPreview,
                 onApply: flow.chooseBackground,
                 onManage: () => showBackgrounds()
               }}

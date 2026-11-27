@@ -75,7 +75,6 @@ export function StoryRail({
   auto,
   canToggleAuto,
   onAuto,
-  theatre,
   canReplay,
   replaying,
   onReplay,

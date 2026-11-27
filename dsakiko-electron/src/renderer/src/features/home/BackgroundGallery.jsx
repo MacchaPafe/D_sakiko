@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Check, ChevronRight, Download, Image as Picture, Search, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Tabs, TabList, Tab, TabPanel } from '../../components/ui/segmented-tabs.jsx'
@@ -9,6 +9,11 @@ import './background-gallery.css'
 
 const extensions = ['png', 'jpg', 'jpeg', 'webp']
 const previewDelayMs = 350
+const nextPreviewDelayMs = 200
+
+/** @typedef {import('../../../../shared/contracts/common.js').AssetRef} AssetRef */
+/** @typedef {{asset: AssetRef|null, name: string, filename: string, key: string|null, builtin?: boolean}} BackgroundOption 图库中的背景或内置背景。 */
+
 // 对话用 null 表示默认背景。仅在选择器补上内置条目，直接复用舞台底图。
 const builtin = {
   key: 'builtin-default',
@@ -57,17 +62,18 @@ function usePicture(client, id, onlineKey) {
 }
 
 /**
- * @param {{client: import('../../backend/client.js').BackendClient, asset?: import('../../../../shared/contracts/common.js').AssetRef|null, hidden?: boolean, story?: boolean, onStartupReady?: (id: string|null) => void}} props 舞台背景及普通舞台首张背景的解码通知。
+ * @param {{client: import('../../backend/client.js').BackendClient, asset?: AssetRef|null, story?: boolean, preview?: boolean, onStartupReady?: (id: string|null) => void}} props 舞台背景及普通舞台首张背景的解码通知。
  * @returns {import('react').ReactElement|null} 位于透明角色画布下方的背景层。
  */
-export function StageBackdrop({ client, asset, hidden = false, story = false, onStartupReady }) {
+export function StageBackdrop({ client, asset, story = false, preview = false, onStartupReady }) {
   const assetId = asset?.id ?? null
   const picture = usePicture(client, assetId, null)
   const image = useRef(null)
   const [failedUrl, setFailedUrl] = useState(null)
   const failed = picture?.error || (picture?.url && failedUrl === picture.url)
   let url = picture?.url
-  if (failed || (story && !asset)) url = defaultBackgroundUrl
+  if (failed) url = preview ? null : defaultBackgroundUrl
+  else if (!asset && (story || preview)) url = defaultBackgroundUrl
   function imageFailed() {
     if (url && url !== defaultBackgroundUrl) setFailedUrl(url)
   }
@@ -89,12 +95,11 @@ export function StageBackdrop({ client, asset, hidden = false, story = false, on
     }
   }, [assetId, url, story, onStartupReady])
   if (!url) return null
-  if (story) return <StoryBackdrop key={url} url={url} hidden={hidden} onError={imageFailed} />
+  if (story) return <StoryBackdrop key={url} url={url} onError={imageFailed} />
   return (
     <img
       ref={image}
       className="stage-backdrop"
-      hidden={hidden}
       src={url}
       onError={imageFailed}
       alt=""
@@ -103,7 +108,7 @@ export function StageBackdrop({ client, asset, hidden = false, story = false, on
   )
 }
 
-function StoryBackdrop({ url, hidden, onError }) {
+function StoryBackdrop({ url, onError }) {
   const box = useRef(null)
   const image = useRef(null)
   const [framed, setFramed] = useState(false)
@@ -121,7 +126,7 @@ function StoryBackdrop({ url, hidden, onError }) {
     return () => observer.disconnect()
   }, [measure])
   return (
-    <div className="story-backdrop" ref={box} hidden={hidden} data-framed={framed}>
+    <div className="story-backdrop" ref={box} data-framed={framed}>
       {framed && <img className="story-fill" src={url} alt="" draggable={false} />}
       <img
         className="story-picture"
@@ -134,6 +139,43 @@ function StoryBackdrop({ url, hidden, onError }) {
       />
     </div>
   )
+}
+
+/**
+ * @param {{client: import('../../backend/client.js').BackendClient, candidate?: BackgroundOption, story: boolean}} props 待预览的背景。经过缩略图间隙时不传候选，保留已显示的图。
+ * @returns {import('react').ReactElement} 覆盖在对话背景上的临时预览。
+ */
+export function StageBackgroundPreview({ client, candidate, story }) {
+  const [shown, setShown] = useState(null)
+  const layers = shown ? [shown] : []
+  if (candidate && (shown === null || candidate.asset?.id !== shown.asset?.id))
+    layers.push(candidate)
+
+  function layer(item) {
+    const pending = item !== shown
+    function pictureLoaded(event) {
+      const image = event.target
+      if (image.classList.contains('story-fill')) return
+      // 保留已经解码的图层和资源访问权，等候选图可绘制后再一起替换。
+      void image.decode().then(
+        () => {
+          if (image.isConnected) setShown(item)
+        },
+        () => {}
+      )
+    }
+    return (
+      <div
+        key={item.asset?.id ?? builtin.key}
+        className="stage-background-preview"
+        data-pending={pending}
+        onLoadCapture={pending ? pictureLoaded : undefined}
+      >
+        <StageBackdrop client={client} asset={item.asset} story={story} preview />
+      </div>
+    )
+  }
+  return <>{layers.map(layer)}</>
 }
 
 function GalleryPicture({ client, item }) {
@@ -168,21 +210,61 @@ function matches(item, query) {
   return [item.name, item.filename].some((text) => text.toLocaleLowerCase().includes(value))
 }
 
+/** @param {(item: BackgroundOption|null|undefined) => void} onPreview 背景条目开始预览，null 恢复已应用的图，undefined 保留已就绪的预览。 */
 function useBackgroundPreview(onPreview, enabled, current, query) {
   const timer = useRef(null)
+  const interaction = useRef(null)
+  const requested = useRef(null)
+  const currentId = current?.id ?? null
   const cancel = useCallback(() => {
-    if (timer.current === null) return
     clearTimeout(timer.current)
     timer.current = null
-    onPreview(null)
+    interaction.current = null
+    if (requested.current !== null) {
+      requested.current = null
+      onPreview(null)
+    }
   }, [onPreview])
-  useEffect(() => cancel, [enabled, current?.id, query, cancel])
-  function start(item) {
-    cancel()
-    if (enabled && item.asset?.id !== current?.id)
-      timer.current = setTimeout(() => onPreview(item), previewDelayMs)
+  useLayoutEffect(() => cancel, [enabled, currentId, query, cancel])
+
+  function pause() {
+    clearTimeout(timer.current)
+    timer.current = null
+    // 卡片之间没有候选图，但舞台仍保留最后一张就绪的预览。
+    if (requested.current) {
+      requested.current = undefined
+      onPreview(undefined)
+    }
   }
-  return { start, cancel }
+  function start(item, input) {
+    if (!enabled) return
+    if (interaction.current?.item === item && interaction.current.input === input) return
+    pause()
+    interaction.current = { item, input }
+    const selected = (item.asset?.id ?? null) === currentId
+    if (selected && requested.current === null) return
+    const delay = requested.current === null ? previewDelayMs : nextPreviewDelayMs
+    timer.current = setTimeout(() => {
+      timer.current = null
+      requested.current = selected ? null : item
+      onPreview(requested.current)
+    }, delay)
+  }
+  function leave(item, input) {
+    if (interaction.current?.item !== item || interaction.current.input !== input) return
+    interaction.current = { input }
+    pause()
+  }
+  function leaveGridPointer() {
+    if (interaction.current?.input === 'pointer') cancel()
+  }
+  function leaveGridFocus(event) {
+    if (interaction.current?.input !== 'focus') return
+    const next = event.relatedTarget
+    if (!next?.matches?.('[data-background-option]') || !event.currentTarget.contains(next))
+      cancel()
+  }
+  return { start, leave, leaveGridPointer, leaveGridFocus, cancel }
 }
 
 function navigateGrid(event) {
@@ -250,10 +332,10 @@ export function BackgroundPicker({
         data-background-option
         aria-pressed={active}
         disabled={saving}
-        onPointerEnter={() => preview.start(item)}
-        onPointerLeave={preview.cancel}
-        onFocus={() => preview.start(item)}
-        onBlur={preview.cancel}
+        onPointerEnter={() => preview.start(item, 'pointer')}
+        onPointerLeave={() => preview.leave(item, 'pointer')}
+        onFocus={() => preview.start(item, 'focus')}
+        onBlur={() => preview.leave(item, 'focus')}
         onClick={() => void apply(item.asset)}
       >
         <Thumbnail client={client} item={item} />
@@ -271,6 +353,7 @@ export function BackgroundPicker({
       ref={panelRef}
       role="dialog"
       aria-label="切换舞台背景"
+      inert={suspended}
       onKeyDown={navigateGrid}
     >
       <header className="stage-wardrobe-heading">
@@ -290,7 +373,12 @@ export function BackgroundPicker({
         />
       </label>
       <div className="stage-wardrobe-list">
-        <div className="background-grid" data-background-grid>
+        <div
+          className="background-grid"
+          data-background-grid
+          onPointerLeave={preview.leaveGridPointer}
+          onBlur={preview.leaveGridFocus}
+        >
           {tile(builtin)}
           {filtered?.map(tile)}
         </div>
@@ -313,6 +401,19 @@ function GalleryCard({ client, item, installed, online, job, onApply, preview })
   const [name, setName] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
+  const nameInput = useRef(null)
+  const renameButton = useRef(null)
+  const wasRenaming = useRef(false)
+  useLayoutEffect(() => {
+    if (edit === 'rename') {
+      nameInput.current.focus()
+      nameInput.current.select()
+    } else if (wasRenaming.current) {
+      renameButton.current?.focus({ preventScroll: true })
+    }
+    wasRenaming.current = edit === 'rename'
+  }, [edit])
+
   async function perform(action) {
     preview?.cancel()
     setError('')
@@ -328,11 +429,23 @@ function GalleryCard({ client, item, installed, online, job, onApply, preview })
   }
   function rename() {
     preview?.cancel()
+    setError('')
     setName(item.name)
     setEdit('rename')
   }
+  function cancelRename() {
+    setError('')
+    setEdit(null)
+  }
+  function handleRenameKey(event) {
+    if (event.key !== 'Escape' || event.nativeEvent.isComposing) return
+    // 先结束卡片内的改名，避免 Escape 同时关闭资源管理窗口。
+    event.preventDefault()
+    if (!pending) cancelRename()
+  }
   function saveName(event) {
     event.preventDefault()
+    if (pending || !name.trim()) return
     void perform(() => client.backgrounds.rename(item.asset.id, name))
   }
   function remove() {
@@ -345,6 +458,18 @@ function GalleryCard({ client, item, installed, online, job, onApply, preview })
       void perform(() => client.backgrounds.control(job.id, 'resume'))
     else void perform(() => client.backgrounds.start(item.key))
   }
+  function startHoverPreview() {
+    if (!edit) preview?.start(item, 'pointer')
+  }
+  function endHoverPreview() {
+    preview?.leave(item, 'pointer')
+  }
+  function startFocusPreview() {
+    preview?.start(item, 'focus')
+  }
+  function endFocusPreview() {
+    preview?.leave(item, 'focus')
+  }
   let action = '下载'
   if (installed) action = '应用'
   else if (job?.status === 'running') action = '正在下载…'
@@ -354,28 +479,38 @@ function GalleryCard({ client, item, installed, online, job, onApply, preview })
   return (
     <article
       className="background-card"
-      onPointerEnter={preview && (() => preview.start(item))}
-      onPointerLeave={preview?.cancel}
+      onPointerEnter={preview ? startHoverPreview : undefined}
+      onPointerLeave={preview ? endHoverPreview : undefined}
     >
       <Thumbnail client={client} item={installed ?? item} />
       <div className="background-card-info">
-        <strong title={item.filename}>{installed?.name ?? item.name}</strong>
-        {edit === 'rename' && (
-          <form onSubmit={saveName}>
+        {edit === 'rename' ? (
+          <form onSubmit={saveName} onKeyDown={handleRenameKey}>
             <input
+              ref={nameInput}
               aria-label="背景名称"
               value={name}
               maxLength={160}
-              autoFocus
+              readOnly={pending}
               onChange={(event) => setName(event.target.value)}
             />
-            <Button size="sm" disabled={pending || !name.trim()}>
-              保存
-            </Button>
-            <Button type="button" size="sm" variant="ghost" onClick={() => setEdit(null)}>
-              取消
-            </Button>
+            <div className="background-card-actions">
+              <Button size="sm" disabled={pending || !name.trim()}>
+                保存
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={pending}
+                onClick={cancelRename}
+              >
+                取消
+              </Button>
+            </div>
           </form>
+        ) : (
+          <strong title={item.filename}>{installed?.name ?? item.name}</strong>
         )}
         {edit === 'remove' && (
           <>
@@ -400,14 +535,14 @@ function GalleryCard({ client, item, installed, online, job, onApply, preview })
                 (!installed && ['running', 'installing'].includes(job?.status))
               }
               onClick={activate}
-              onFocus={preview && (() => preview.start(item))}
-              onBlur={preview?.cancel}
+              onFocus={preview ? startFocusPreview : undefined}
+              onBlur={preview ? endFocusPreview : undefined}
             >
               {action}
             </Button>
             {!online && !item.builtin && (
               <>
-                <Button size="sm" variant="ghost" onClick={rename}>
+                <Button size="sm" variant="ghost" ref={renameButton} onClick={rename}>
                   改名
                 </Button>
                 <Button size="sm" variant="ghost" onClick={() => setEdit('remove')}>
@@ -547,7 +682,12 @@ function BackgroundManager({ client, initial, jobs, onApply, onPreview, current,
           {filtered?.length === 0 && (online || (query && !matches(builtin, query))) && (
             <p>{query ? '没有匹配的背景' : '暂无背景图片'}</p>
           )}
-          <div className="background-grid" data-background-grid>
+          <div
+            className="background-grid"
+            data-background-grid
+            onPointerLeave={online ? undefined : preview.leaveGridPointer}
+            onBlur={online ? undefined : preview.leaveGridFocus}
+          >
             {!online && card(builtin)}
             {filtered?.map(card)}
           </div>

@@ -44,3 +44,18 @@ export function lastDialogueEntry(chat, now = Infinity) {
 export function lastDialogue(chat, now = Infinity) {
   return lastDialogueEntry(chat, now)?.line ?? null
 }
+
+/**
+ * @param {import('./contracts/conversation.js').Chat} chat 台词所在的存档。
+ * @param {NonNullable<ReturnType<typeof lastDialogueEntry>>} entry 历史末句。
+ * @returns {{personalityName: string|undefined, name: string}} 当时使用的人格名称及存档中的角色名称。
+ */
+export function dialogueSpeakerNames(chat, { line, ref }) {
+  const character = chat.turns
+    .find((turn) => turn.id === ref.turnId)
+    ?.meta?.characterContext?.characters?.find((actor) => actor.id === line.speakerId)
+  return {
+    personalityName: character?.forms.find((form) => form.id === line.formId)?.displayName,
+    name: chat.meta.extensions?.characterNames?.[line.speakerId] ?? line.speakerId
+  }
+}

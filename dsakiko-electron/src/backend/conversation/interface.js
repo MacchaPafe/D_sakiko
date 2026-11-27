@@ -359,6 +359,17 @@ export class Conversations {
   }
 
   /**
+   * @param {string} chatId 已保存的对话。
+   * @returns {Promise<import('../../shared/contracts/conversation.js').StagePreview>} 无需初始化演出序列即可恢复的舞台内容。
+   */
+  async getStagePreview(chatId) {
+    const preview = await this.store.getStagePreview(chatId)
+    const state = this.states.get(chatId)
+    if (state?.active || state?.compressing) preview.subtitle = null
+    return preview
+  }
+
+  /**
    * 解析对话当前的演出场景配置，并在场景资源受保护的期间执行指定操作。
    * @template T
    * @param {import('../../shared/contracts/conversation.js').Chat} chat 对话数据。

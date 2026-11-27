@@ -258,6 +258,9 @@
  * @property {import('./common.js').Problem | null} problem 最近需要处理的问题。
  */
 
+/** @typedef {{text: string, translation: string|null, name: string}} StageSubtitle 首屏可直接显示的已保存台词。 */
+/** @typedef {{background: import('./common.js').AssetRef|null, subtitle: StageSubtitle|null}} StagePreview 启动时从存档读取的舞台内容。 */
+
 /**
  * @typedef {object} ChatSummary
  * @property {string} id 对话身份。

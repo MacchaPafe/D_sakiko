@@ -7,6 +7,16 @@
   pointer-events: none;
 }
 
+.stage-background-preview {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.stage-background-preview[data-pending='true'] {
+  visibility: hidden;
+}
+
 .stage-resources,
 .background-gallery,
 .background-gallery-pane {
@@ -111,6 +121,7 @@
 }
 
 .background-card input {
+  display: block;
   padding: 0 9px;
 }
 
@@ -198,11 +209,19 @@
   font-size: 13px;
 }
 
+.background-card strong {
+  line-height: 32px;
+}
+
 .background-card-actions {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
   margin-top: 6px;
+}
+
+.background-card-actions > button {
+  padding-inline: 8px;
 }
 
 .background-picker {

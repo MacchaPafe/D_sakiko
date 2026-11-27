@@ -60,6 +60,7 @@ export const API_METHODS = {
     getReplayMaterials: false,
     getStagePresentation: false,
     getStageBackground: false,
+    getStagePreview: false,
     inspectContext: false,
     listReminders: false,
     getReminder: false,

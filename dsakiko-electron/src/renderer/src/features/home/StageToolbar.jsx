@@ -173,6 +173,8 @@ export function StageToolbar({
       )?.focus()
 
     function dismissOutside(event) {
+      // 打开上层对话框时保留背景面板，返回后可继续使用原来的搜索和滚动位置。
+      if (backgroundOpen && event.target.closest('button[aria-haspopup="dialog"]')) return
       if (!dialog.contains(event.target) && !toolbar.current.contains(event.target)) {
         setOpenFor(null)
         closeBackground()

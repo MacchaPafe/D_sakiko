@@ -283,7 +283,7 @@
   height: 1px;
   background: #f4f1fa99;
 }
-.story-strip button:hover:not(:disabled),
+.story-strip button:hover:not(:disabled, [aria-disabled='true']),
 .story-strip button[aria-expanded='true'] {
   background: rgb(255 255 255 / 18%);
 }
@@ -292,10 +292,13 @@
   cursor: default;
 }
 .story-strip .story-auto[aria-pressed='true'] {
-  background: rgb(51 64 98 / 70%);
+  background: #384766;
   color: #e3faff;
   text-shadow: 0 0 5px #6fedff;
   opacity: 1;
+}
+.story-strip .story-auto[aria-pressed='true']:hover:not([aria-disabled='true']) {
+  background: #475979;
 }
 .story-auto[aria-pressed='true'] svg {
   filter: drop-shadow(0 0 4px #85efff88);

@@ -208,6 +208,8 @@ async function verifySearchSelectScrollbar(page, input) {
 async function dragStageTools(page, dx, dy, orientation) {
   const handle = page.getByRole('button', { name: '拖动舞台工具栏' })
   const toolbar = page.getByRole('group', { name: '舞台工具' })
+  // 连续拖动可能使手柄刚刚重排，先等 Playwright 确认可命中，再读取坐标。
+  await handle.hover()
   const grip = await handle.boundingBox()
   const x = grip.x + grip.width / 2
   const y = grip.y + grip.height / 2
@@ -1369,6 +1371,8 @@ app.on('window-all-closed', () => app.quit())`
       const theatreTab = page.getByRole('tab', { name: '小剧场', exact: true })
       const tabBackground = () =>
         theatreTab.evaluate((element) => getComputedStyle(element).backgroundColor)
+      // 引导页刚被替换，先把鼠标移到页签外再采集未悬停的颜色。
+      await page.locator('.home-brand').hover()
       const restingTabBackground = await tabBackground()
       await theatreTab.hover()
       await expect.poll(tabBackground).not.toBe(restingTabBackground)

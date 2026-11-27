@@ -3,7 +3,11 @@ import { StageActor } from './stage-actor.js'
 import { Performance } from '../../performance/interface.js'
 import { createAudioOutput } from '../../performance/audio-output.js'
 import { stageModelKey } from '../../performance/stage-layout.js'
-import { isReplayableDialogue, lastDialogueEntry } from '../../../../shared/chat-history.js'
+import {
+  dialogueSpeakerNames,
+  isReplayableDialogue,
+  lastDialogueEntry
+} from '../../../../shared/chat-history.js'
 
 /** @typedef {import('../../../../shared/contracts/presentation.js').ReplayMaterials} ReplayMaterials */
 /** @typedef {{text: string, name: string, guideId: string|null, translation: string|null, canReplayLine: boolean, replayingLine: boolean, lineReplayError: string|null, problem: string|null, loading: boolean, hasModel: boolean, modelsSettled: boolean, canRetryModel: boolean, shownOutfitKey: string|null, failedOutfitKey: string|null, sides: boolean[]|null}} StageState 本地字幕和模型状态；modelsSettled 表示各模型均已绘制、确认缺省或明确失败。 */
@@ -177,6 +181,7 @@ export class StageController {
       })
     }
     this.history = null
+    this.restoredSubtitle = null
     this.lineReplaySource = null
     this.player.follow(null)
     this.stopReplay()
@@ -310,26 +315,20 @@ export class StageController {
     const request = this.replayRequest
     if (request && (!chatId || chatId === request.chatId)) request.finish()
   }
-  /** @param {object|null} snapshot 当前聊天的正式快照。 @returns {void} 恢复静态末句，不创建回放、不触发历史音频。 */
-  setHistory(snapshot) {
+  /**
+   * @param {import('../../../../shared/contracts/conversation.js').ConversationSnapshot|null} snapshot 当前聊天的正式快照。
+   * @param {import('../../../../shared/contracts/conversation.js').StageSubtitle|null} [restoredSubtitle] 完整快照到达前可显示的已保存末句。
+   * @returns {void} 恢复静态末句，不创建回放、不触发历史音频。
+   */
+  setHistory(snapshot, restoredSubtitle = null) {
     const presentation = snapshot?.chat.meta.settings?.presentation
     if (this.replayRequest && this.orientation !== presentation?.orientation)
       this.player.refreshReplay(this.replayRequest.getMaterials)
     this.orientation = presentation?.orientation
     this.frames = presentation?.frames
     const entry = lastDialogueEntry(snapshot?.chat, Date.now())
-    this.history = entry
-      ? {
-          ...entry,
-          personalityName: snapshot.chat.turns
-            .find((turn) => turn.id === entry.ref.turnId)
-            ?.meta?.characterContext?.characters?.find((actor) => actor.id === entry.line.speakerId)
-            ?.forms.find((form) => form.id === entry.line.formId)?.displayName,
-          name:
-            snapshot.chat.meta.extensions?.characterNames?.[entry.line.speakerId] ??
-            entry.line.speakerId
-        }
-      : null
+    this.history = entry ? { ...entry, ...dialogueSpeakerNames(snapshot.chat, entry) } : null
+    this.restoredSubtitle = snapshot ? null : restoredSubtitle
     this.historyAllowed = !snapshot?.activeTurnId && (!snapshot || snapshot.activity === 'idle')
     this.progress(this.player.getSnapshot())
   }
@@ -337,13 +336,19 @@ export class StageController {
     if (!this.historyAllowed) return
     const line = this.history?.line
     const slot = scene?.slots.find((item) => item.id === line?.speakerId)
+    const subtitle = line ?? this.restoredSubtitle
     this.guideId = null
     this.lineReplaySource = line && isReplayableDialogue(line) ? { line: this.history.ref } : null
-    this.subtitles.set(dialogueMarkdown(line?.text).count)
+    this.subtitles.set(dialogueMarkdown(subtitle?.text).count)
     this.update({
-      text: line?.text ?? '',
-      translation: line?.translation ?? null,
-      name: this.history?.personalityName ?? slot?.displayName ?? this.history?.name ?? '',
+      text: subtitle?.text ?? '',
+      translation: subtitle?.translation ?? null,
+      name:
+        this.history?.personalityName ??
+        slot?.displayName ??
+        this.history?.name ??
+        this.restoredSubtitle?.name ??
+        '',
       guideId: null,
       canReplayLine: Boolean(this.lineReplaySource)
     })
