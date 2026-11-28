@@ -20,10 +20,10 @@ function empty() {
 
 /** 全局背景图库。图库、对话与访问租约分别持有资源，任务完成与原图入库一次提交。 */
 export class Backgrounds {
-  constructor({ appDataRoot, assets, fetch, token }) {
+  constructor({ appDataRoot, cacheRoot, assets, fetch, token }) {
     this.file = path.join(appDataRoot, 'backgrounds.json')
     this.assets = assets
-    this.source = new BackgroundSource(fetch, token)
+    this.source = new BackgroundSource(fetch, { cacheRoot, token })
     this.queue = new SerialQueue()
     this.events = new SnapshotBus()
     this.downloadJobs = new DownloadJobFeed()
@@ -66,6 +66,16 @@ export class Backgrounds {
   }
   preview(key) {
     return this.source.preview(key)
+  }
+
+  /**
+   * @template T
+   * @param {boolean} remove 是否删除磁盘上的缩略图。
+   * @param {(names: string[]) => Promise<T>} operation 宿主的缓存统计或清理操作。
+   * @returns {Promise<T>} 操作结果。
+   */
+  withPreviewCacheFiles(remove, operation) {
+    return this.source.previewCache?.withFiles(remove, operation) ?? operation([])
   }
 
   async importImages(refs) {

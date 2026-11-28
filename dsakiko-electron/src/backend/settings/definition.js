@@ -77,6 +77,9 @@ export const speechDefinition = {
 
 /** 全局设置项的字段定义（不包含版本号、连接列表与密钥）。 */
 export const settingsDefinition = {
+  application: {
+    windowCloseBehavior: config.enum({ default: null, values: [null, 'tray', 'quit'] })
+  },
   tools: {
     files: {
       readMode: config.enum({ default: 'all', values: ['all', 'roots'] }),

@@ -513,15 +513,14 @@ function GalleryCard({ client, item, installed, online, job, onApply, preview })
           <strong title={item.filename}>{installed?.name ?? item.name}</strong>
         )}
         {edit === 'remove' && (
-          <>
-            <p>从图库移除？已使用它的对话会保留背景。</p>
+          <div className="background-card-actions">
             <Button size="sm" disabled={pending} onClick={remove}>
               确认移除
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setEdit(null)}>
               取消
             </Button>
-          </>
+          </div>
         )}
         {!edit && (
           <div className="background-card-actions">

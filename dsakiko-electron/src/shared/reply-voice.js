@@ -38,3 +38,31 @@ export function setReplyVoice(form, materials, enabled) {
   form.replyVoiceEnabled = enabled
   form.voiceExplicit = true
 }
+
+/**
+ * 判断形态是否已配置任何语音模型、参考音频或语音包绑定。
+ * @param {object|null} form 形态对象。
+ * @returns {boolean} 存在任一语音材料或绑定时返回 true。
+ */
+export function hasAnyVoiceMaterials(form) {
+  if (!form) return false
+  if (form.voicePackageId) return true
+  const voice = configuredVoice(form)
+  if (!voice) return false
+  if (voice.gptWeights || voice.sovitsWeights) return true
+  if (voice.defaultReference?.audio) return true
+  return Object.values(voice.emotions ?? {}).some((ref) => Boolean(ref?.audio))
+}
+
+/**
+ * 清空形态的全部回复语音材料与语音包绑定，便于随后回收未引用的模型文件。
+ * @param {object} form 形态草稿。
+ */
+export function clearReplyVoice(form) {
+  form.voice = null
+  delete form.inactiveVoice
+  delete form.voicePackageId
+  delete form.voiceBaseline
+  form.replyVoiceEnabled = false
+  form.voiceExplicit = true
+}

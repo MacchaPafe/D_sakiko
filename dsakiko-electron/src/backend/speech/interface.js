@@ -82,6 +82,26 @@ export class Speech {
     this.runtimeWaiting = Boolean(this.runId && this.restart)
   }
 
+  /** 阻止新任务接入，关闭空闲进程后再修改组件安装记录。 */
+  async withIdleRuntime(operation) {
+    return this.lifecycle.run('admission', async () => {
+      requireValue(
+        ![...this.tasks.values()].some((task) => !task.terminal),
+        'speech_busy',
+        '请等待当前语音合成结束后再卸载。'
+      )
+      const pid = await this.restart?.()
+      if (pid) {
+        for (const owner of this.residentOwners) await this.releaseProcessOwner(owner, pid)
+        this.residentOwners.clear()
+      }
+      this.residentModels.clear()
+      this.runId = null
+      this.runtimeWaiting = false
+      return operation()
+    })
+  }
+
   /** 从受理到建立任务归属均属于在途操作，退出时必须等待。 */
   async submitRequest(request) {
     requireValue(Number.isInteger(request.priority) && request.priority >= 0)

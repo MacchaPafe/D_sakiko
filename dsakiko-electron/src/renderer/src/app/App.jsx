@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react'
 import { createBackendClient } from '@/backend/client.js'
 import { desktopHost } from '../host/desktop.js'
+import { loadUiPreferences } from '../host/ui-preferences.js'
 import { WelcomePage } from '../features/onboarding/WelcomePage.jsx'
 import { SetupFlow } from '../features/setup/setup-flow.js'
 import { SetupPage, SetupLoading } from '../features/setup/SetupPage.jsx'
@@ -11,7 +12,11 @@ import { HomePage } from '../features/home/HomePage.jsx'
 const stageStartupLimitMs = 600
 
 async function connectBackend() {
-  return createBackendClient(await desktopHost().getBackendConnection())
+  const [connection] = await Promise.all([
+    desktopHost().getBackendConnection(),
+    loadUiPreferences()
+  ])
+  return createBackendClient(connection)
 }
 
 function observeWindowControls(onChange) {

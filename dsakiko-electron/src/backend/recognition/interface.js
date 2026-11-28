@@ -40,6 +40,7 @@ export class Recognition {
   /** 单任务执行；取消时终止实际推理，避免仅取消等待却继续占用 CPU。 */
   async task(id, signal, operation) {
     requireValue(!this.closed, 'recognition_closed', '识别服务已关闭。')
+    requireValue(!this.uninstalling, 'recognition_busy', '语音识别正在卸载。')
     requireValue(!this.active, 'recognition_busy', '已有识别任务正在执行。')
     requireValue(typeof id === 'string' && id.length > 0 && id.length <= 200)
     clearTimeout(this.idleTimer)
@@ -133,6 +134,23 @@ export class Recognition {
   /** 识别任务保留当前进程，新请求才轮换运行包。 */
   markRuntimeChanged() {
     this.runtimeWaiting = Boolean(this.child || this.active)
+  }
+
+  /** 识别工作进程确认退出前，暂缓受理新的预加载或识别。 */
+  async withIdleRuntime(operation) {
+    requireValue(
+      !this.active && !this.uninstalling,
+      'recognition_busy',
+      '请等待当前语音识别结束后再卸载。'
+    )
+    this.uninstalling = true
+    try {
+      clearTimeout(this.idleTimer)
+      await this.stopChild()
+      return await operation()
+    } finally {
+      this.uninstalling = false
+    }
   }
 
   /** 向工作进程请求一次操作，响应身份不匹配时忽略迟到消息。 */
@@ -243,21 +261,23 @@ export class Recognition {
     const child = this.child
     this.child = null
     this.progress = null
-    if (!child) {
-      await this.runtime?.releaseResources?.()
+    const runtime = this.runtime
+    this.stopping = (async () => {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        await new Promise((resolve) => {
+          child.once('exit', resolve)
+          child.kill('SIGKILL')
+        })
+      }
+      await runtime?.releaseResources?.(child?.pid)
       this.runtime = null
-      return
+      if (child && !this.closed) this.state = 'idle'
+    })()
+    try {
+      await this.stopping
+    } finally {
+      this.stopping = null
     }
-    this.stopping = new Promise((resolve) => {
-      if (child.exitCode !== null || child.signalCode !== null) return resolve()
-      child.once('exit', resolve)
-      child.kill('SIGKILL')
-    })
-    await this.stopping
-    await this.runtime?.releaseResources?.(child.pid)
-    this.runtime = null
-    this.stopping = null
-    if (!this.closed) this.state = 'idle'
   }
 
   /** 关闭服务，取消识别并释放模型进程。 */

@@ -366,9 +366,7 @@ export function PersonaManager({
               <div className="persona-empty-copy">
                 <h3>{personas.length ? '选择或添加对话身份' : '还没有对话身份'}</h3>
                 <p>
-                  {personas.length
-                    ? '从左侧列表选择一个身份查看或编辑，或点击上方「添加身份」创建新的身份。'
-                    : '自定义昵称与背景设定，或套用已有角色的人格，在对话中以特定身份与角色交流。'}
+                  自定义昵称与背景设定，在对话中以特定身份与角色交流。
                 </p>
               </div>
               {!personas.length && (
@@ -577,7 +575,7 @@ export function PersonaManager({
         {deleting && (
           <div className="persona-delete-wrap">
             <div className="role-delete persona-delete-enter">
-              <p>删除这个身份？已有聊天会保留创建时的身份。</p>
+              <p>删除这个身份？已有聊天仍然会保留身份记录。</p>
               <div className="role-actions">
                 <Button size="sm" variant="destructive" disabled={pending} onClick={remove}>
                   确认删除身份

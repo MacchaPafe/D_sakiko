@@ -17,6 +17,7 @@ import { DownloadJobFeed } from '../core/download-job-feed.js'
 import { createLegacySource } from './legacy-source.js'
 import { extractAssetReferences } from '../resources/references.js'
 import { processUsesResources } from '../resources/process.js'
+import { diskFiles, reclaimableFileBytes, resourceUsage } from '../storage/disk-usage.js'
 import { SetupCatalog, setupGroups } from './catalog.js'
 import { scanLegacyDirectory, validateLegacySource } from './legacy.js'
 import { checkSpace, copyNew, sourcePath, stamp, walk } from './files.js'
@@ -24,7 +25,7 @@ import { downloadFile } from './download.js'
 import { configuredVoice } from '../../shared/reply-voice.js'
 import { voiceBaseline, voiceChanges, applyVoiceChanges } from './voice-update.js'
 import { VoiceReuse, voiceDefinition } from './voice-reuse.js'
-import { collectDownloadCache } from './cache.js'
+import { collectDownloadCache, unusedDownloadFiles } from './cache.js'
 import { extractArchive, prepareRuntime } from './installers.js'
 import { matchBangDreamCharacters } from '../characters/bang-dream.js'
 import { legacyOutfitsToMerge, mergeLegacyOutfits } from '../characters/legacy-outfits.js'
@@ -706,6 +707,170 @@ export class ResourceSetup {
     })
   }
 
+  /** 核对语音功能的运行包、基础模型及仍可恢复的安装任务。 */
+  async voiceRemovalPlan(kind) {
+    requireValue(['gsv', 'asr'].includes(kind))
+    const installed = await this.installations()
+    const ids = [kind + '.runtime', kind + '.models']
+    const records = ids.map((id) => installed[id]).filter(Boolean)
+    const refs = extractAssetReferences(records.map(({ refs }) => refs))
+    const jobs = []
+    const releasing = new Set(ids.map((id) => 'installation:' + id))
+    if (kind === 'gsv') releasing.add('settings:global')
+    let taskId = null
+    for (const snapshot of await this.listJobs()) {
+      const active = this.running.has(snapshot.id)
+      if (
+        !active &&
+        !['paused', 'failed'].includes(snapshot.status) &&
+        !records.some((record) => record.jobId === snapshot.id)
+      )
+        continue
+      const job = await this.readJob(snapshot.id)
+      if (job?.kind !== 'download') continue
+      if (
+        (active || ['paused', 'failed'].includes(job.status)) &&
+        job.selected?.some((item) => ids.includes(item.id))
+      )
+        taskId ??= job.id
+      if (job.status !== 'succeeded' || !records.some((item) => item.jobId === job.id)) continue
+      const retained = Object.fromEntries(
+        Object.entries(job.refs).filter(([name]) => !ids.some((id) => name.startsWith(id + ':')))
+      )
+      jobs.push({ job, retained })
+      releasing.add('setup:' + job.id)
+    }
+    const runtime = records.find((item) => item.id.endsWith('.runtime'))
+    const retired = await readJson(path.join(this.directory, 'retired-runtimes.json'), [])
+    const pending = retired.filter((directory) => this.runtimeRelative(directory, kind))
+    const directories = [...new Set([runtime?.directory, ...pending].filter(Boolean))]
+    for (const directory of directories)
+      requireValue(this.runtimeRelative(directory, kind), 'runtime_directory_mismatch')
+    return { ids, records, refs, jobs, releasing, directories, taskId }
+  }
+
+  runtimeRelative(directory, kind) {
+    const relative = path.relative(this.library, directory).split(path.sep).join('/')
+    return /^runtimes\/[a-f0-9-]{36}\/(asr|gsv)\.runtime$/.test(relative) &&
+      relative.endsWith('/' + kind + '.runtime')
+      ? relative
+      : null
+  }
+
+  /** @param {'gsv' | 'asr'} kind 语音功能。 @returns {Promise<object>} 卸载预览。 */
+  async previewRuntimeRemoval(kind) {
+    const plan = await this.voiceRemovalPlan(kind)
+    const index = await this.assets.state()
+    const activeLeases = await readJson(path.join(this.directory, 'runtime-leases.json'), {})
+    for (const [owner, lease] of Object.entries(activeLeases))
+      if (plan.directories.includes(lease.directory)) plan.releasing.add(owner)
+    const retained = new Set(
+      extractAssetReferences(plan.jobs.map(({ retained }) => retained)).map(({ id }) => id)
+    )
+    const removableIds = plan.refs.map(({ id }) => id).filter((id) => !retained.has(id))
+    const modelBytes = await resourceUsage(this.assets, index).estimate(
+      removableIds,
+      plan.releasing
+    )
+    let sharedBytes = 0
+    const countedShared = new Set()
+    for (const id of new Set(removableIds)) {
+      const owners = Object.entries(index.owners)
+        .filter(([, ids]) => ids.includes(id))
+        .map(([owner]) => owner)
+      if (!index.assets[id] || owners.some((owner) => !plan.releasing.has(owner))) continue
+      const target = await this.assets.collector.paths(index, id).catch(() => null)
+      if (!target) continue
+      for await (const { info } of diskFiles(target.source)) {
+        if (info.nlink <= 1) continue
+        const identity = info.ino && info.dev + ':' + info.ino
+        if (identity && countedShared.has(identity)) continue
+        if (identity) countedShared.add(identity)
+        sharedBytes += info.size
+      }
+    }
+    let runtimeBytes = 0
+    for (const directory of plan.directories) {
+      const location = await sourcePath(this.library, this.runtimeRelative(directory, kind)).catch(
+        () => null
+      )
+      if (location) runtimeBytes += await reclaimableFileBytes(location)
+    }
+    return {
+      installed: plan.records.length > 0,
+      pending: plan.directories.length > 0,
+      modelBytes,
+      runtimeBytes,
+      sharedBytes,
+      taskId: plan.taskId
+    }
+  }
+
+  /** 卸载只撤销对应安装所持有的引用，其余角色、聊天和自有模型仍由原持有者保护。 */
+  async uninstallRuntime(kind) {
+    return this.queue.run('admission', async () => {
+      const plan = await this.voiceRemovalPlan(kind)
+      requireValue(!plan.taskId, 'setup_busy', '请先在下载中心取消此组件的安装或更新任务。')
+      if (!plan.records.length && !plan.directories.length)
+        return { pending: false, collection: null }
+      requireValue(this.withIdleRuntime, 'runtime_unavailable', '当前宿主无法停止语音进程。')
+      return this.withIdleRuntime(kind, async () => {
+        // 进程退出时会释放安装队列中的租约，必须在等待退出后才进入该队列。
+        await this.queue.run('installations', async () => {
+          const installed = await this.installations()
+          for (const record of plan.records)
+            requireValue(
+              fingerprint(installed[record.id]) === fingerprint(record),
+              'revision_conflict'
+            )
+          if (kind === 'gsv' && plan.refs.length) {
+            const settings = await this.settings.get()
+            const ids = new Set(plan.refs.map(({ id }) => id))
+            const resources = settings.speechStartup.gptSovits.resources
+            const remaining = Object.fromEntries(
+              Object.entries(resources).map(([section, groups]) => [
+                section,
+                Object.fromEntries(
+                  Object.entries(groups).map(([name, files]) => [
+                    name,
+                    Object.fromEntries(Object.entries(files).filter(([, ref]) => !ids.has(ref.id)))
+                  ])
+                )
+              ])
+            )
+            await this.settings.set('speechStartup.gptSovits.resources', remaining, {
+              expectedRevision: settings.revision
+            })
+          }
+          for (const { job, retained } of plan.jobs) {
+            job.refs = retained
+            await this.assets.commitReferences('setup:' + job.id, retained, () => this.save(job))
+          }
+          const retiredFile = path.join(this.directory, 'retired-runtimes.json')
+          const retired = new Set(await readJson(retiredFile, []))
+          for (const directory of plan.directories) retired.add(directory)
+          await writeJson(retiredFile, [...retired])
+          for (const id of plan.ids) delete installed[id]
+          let commit = () => writeJson(path.join(this.directory, 'installations.json'), installed)
+          for (const record of plan.records) {
+            const next = commit
+            commit = () => this.assets.commitReferences('installation:' + record.id, null, next)
+          }
+          await commit()
+        })
+        await this.maintainRuntimes()
+        const retired = await readJson(path.join(this.directory, 'retired-runtimes.json'), [])
+        const collection = plan.refs.length
+          ? await this.assets.collectUnused({ resources: plan.refs })
+          : null
+        return {
+          pending: plan.directories.some((directory) => retired.includes(directory)),
+          collection
+        }
+      })
+    })
+  }
+
   async managedVoice(id) {
     requireValue(
       setupGroups.find((group) => group.id === 'voices').options.some((option) => option.id === id),
@@ -1036,7 +1201,16 @@ export class ResourceSetup {
 
   publishDownloadJob(snapshot) {
     const { id, kind, status, phase, completedAt, expiresAt, download, problem } = snapshot
-    this.downloadJobs.publish({ id, kind, status, phase, completedAt, expiresAt, download, problem })
+    this.downloadJobs.publish({
+      id,
+      kind,
+      status,
+      phase,
+      completedAt,
+      expiresAt,
+      download,
+      problem
+    })
   }
   async getJob(id) {
     const job = await this.readJob(id)
@@ -2276,6 +2450,20 @@ export class ResourceSetup {
     } catch (error) {
       this.assets.reportMaintenance(error)
     }
+  }
+
+  /** 用户清理与下载计划、恢复和接入串行，任务记录缺失时保守退出。 */
+  withUnusedDownloads(operation) {
+    return this.queue.run('admission', async () => {
+      const jobs = []
+      for (const snapshot of await this.listJobs()) {
+        const job = await this.readJob(snapshot.id)
+        requireValue(job, 'setup_job_missing')
+        jobs.push(job)
+      }
+      const candidates = await unusedDownloadFiles(this.cache, jobs, new Set(this.running.keys()))
+      return operation(candidates)
+    })
   }
 
   async maintain() {

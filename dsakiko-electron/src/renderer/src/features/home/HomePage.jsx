@@ -1095,6 +1095,18 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
   function showResourceDownloads() {
     push(downloadPage('resources'))
   }
+  function showStorageDownloads() {
+    push(downloadPage('all'))
+  }
+  function manageStoredCharacter(id) {
+    push({
+      kind: 'characters',
+      title: '角色管理',
+      layout: 'character-manager-dialog',
+      initialId: id
+    })
+    void setup.refreshManagedCatalog()
+  }
   function viewInstalledOutfit(target) {
     showOutfits({ ...target, tab: 'installed' })
   }
@@ -1392,6 +1404,8 @@ export function HomePage({ client, setup, setupState, startupPending, onStartupR
             onClose={onDismiss}
             onDownload={openDownload}
             onShowDownloads={showResourceDownloads}
+            onStorageDownloads={showStorageDownloads}
+            onManageStoredCharacter={manageStoredCharacter}
           />
         )
       case 'outfits':

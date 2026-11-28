@@ -280,7 +280,7 @@ export function ChatArchive({ client, flow, chats, characters = [], currentId })
                 disabled={busy || filtered.length === 0 || allFilteredSelected}
                 onClick={selectAllFiltered}
               >
-                全选当前
+                全选
               </Button>
               <Button
                 type="button"

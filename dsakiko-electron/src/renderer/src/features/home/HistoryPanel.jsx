@@ -6,6 +6,7 @@ import { Button } from '../../components/ui/button.jsx'
 import { HistoryTurn } from './HistoryTurn.jsx'
 import { historyGroups } from './history.js'
 import { fitHistorySize, HISTORY_SIZE_KEY, readHistorySize } from './history-size.js'
+import { uiPreferences } from '../../host/ui-preferences.js'
 
 import { MessageText, WebLink } from './DialogueMarkdown.jsx'
 import { webHref } from '../../../../shared/dialogue-markdown.js'
@@ -337,7 +338,7 @@ export function HistoryPanel({
   }
   function rememberSize() {
     try {
-      localStorage.setItem(HISTORY_SIZE_KEY, JSON.stringify(currentSize.current))
+      uiPreferences.setItem(HISTORY_SIZE_KEY, JSON.stringify(currentSize.current))
     } catch {
       /* 本地存储不可用时仍允许调整。 */
     }

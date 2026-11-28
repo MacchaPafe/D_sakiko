@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import { expect, test, vi } from 'vitest'
 import { installSingleInstance } from '../../src/main/single-instance.js'
 import { installWindowCloseBehavior } from '../../src/main/windows/close-behavior.js'
+import { Settings } from '../../src/backend/settings/interface.js'
+import { readJson } from '../../src/backend/core/support.js'
 
 function fixture(primary) {
   const app = new EventEmitter()
@@ -58,10 +60,16 @@ test('macOS 关窗隐藏，Windows 首次选择持久化并允许改为退出', 
         visible = false
       })
     })
-    const file = join(directory, 'preferences.json')
+    const settings = new Settings({
+      directory,
+      assets: {
+        registerOwnerReader() {},
+        commitReferences: (_owner, _value, save) => save()
+      }
+    })
     const event = { preventDefault: vi.fn() }
     let quitting = false
-    const common = { app, window, dialog, file, isQuitting: () => quitting }
+    const common = { app, window, dialog, settings, isQuitting: () => quitting }
     installWindowCloseBehavior({ ...common, platform: 'darwin' })
     window.emit('close', event)
     expect(window.hide).toHaveBeenCalledOnce()
@@ -87,6 +95,9 @@ test('macOS 关窗隐藏，Windows 首次选择持久化并允许改为退出', 
     window.emit('close', event)
     await expect.poll(() => window.hide.mock.calls.length).toBe(2)
     expect(await behavior.getBehavior()).toBe('tray')
+    expect(
+      (await readJson(join(directory, 'settings.json'))).settings.application.windowCloseBehavior
+    ).toBe('tray')
     restore()
     expect(window.show).toHaveBeenCalledOnce()
     expect(window.webContents.send).toHaveBeenLastCalledWith('host:window-visibility', true)

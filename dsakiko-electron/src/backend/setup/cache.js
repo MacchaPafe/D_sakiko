@@ -5,9 +5,9 @@ import { readdir, unlink } from 'node:fs/promises'
  * @param {string} directory 下载缓存目录。
  * @param {object[]} jobs 已读取的全部持久任务，调用者负责与任务创建、启动串行。
  * @param {Set<string>} activeIds 尚未退出执行函数的任务。
- * @returns {Promise<void>} 回收无可恢复任务使用的完整文件和分片，保留未知条目。
+ * @returns {Promise<string[]>} 无可恢复任务使用的完整文件和分片。
  */
-export async function collectDownloadCache(directory, jobs, activeIds = new Set()) {
+export async function unusedDownloadFiles(directory, jobs, activeIds = new Set()) {
   const retained = new Set()
   for (const job of jobs) {
     if (job.kind !== 'download') continue
@@ -19,13 +19,21 @@ export async function collectDownloadCache(directory, jobs, activeIds = new Set(
   try {
     entries = await readdir(directory, { withFileTypes: true })
   } catch (error) {
-    if (error.code === 'ENOENT') return
+    if (error.code === 'ENOENT') return []
     throw error
   }
-  for (const entry of entries) {
+  return entries.flatMap((entry) => {
     const match = /^([a-f0-9]{64})(?:\.part)?$/.exec(entry.name)
-    if (!match || !entry.isFile() || retained.has(match[1])) continue
-    await unlink(path.join(directory, entry.name)).catch((error) => {
+    return match && entry.isFile() && !retained.has(match[1])
+      ? [path.join(directory, entry.name)]
+      : []
+  })
+}
+
+/** 常规定期维护与用户清理使用同一套下载归属判定。 */
+export async function collectDownloadCache(directory, jobs, activeIds) {
+  for (const file of await unusedDownloadFiles(directory, jobs, activeIds)) {
+    await unlink(file).catch((error) => {
       if (error.code !== 'ENOENT') throw error
     })
   }

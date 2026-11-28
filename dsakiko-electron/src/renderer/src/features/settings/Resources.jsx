@@ -230,7 +230,7 @@ export function Resources({
             <section className="settings-stack" key={id}>
               <h3>{group.name}</h3>
               {id === 'voices' && (
-                <p>在角色管理中编辑各人格的回复语音。更新语音包时可以选择要采用的材料。</p>
+                <p>在角色管理中可进一步修改角色的语音。</p>
               )}
               {group.options.map((option) => (
                 <ResourceCard

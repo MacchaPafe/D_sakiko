@@ -14,6 +14,7 @@ import { Choice } from '../../components/ui/Choice.jsx'
 import { Switch } from '../../components/ui/switch.jsx'
 import { catalogTextSaveDelay, useCatalogEditor } from '../../hooks/use-catalog-editor.js'
 import { orderItems, sameOrder, useSortableRows } from '../../hooks/use-sortable-rows.js'
+import { clearReplyVoice } from '../../../../shared/reply-voice.js'
 import { ReplyVoice } from './ReplyVoice.jsx'
 import { mergeCharacterEdit, newCharacter, newForm } from './character-edit.js'
 import '../../components/ui/sortable-rows.css'
@@ -545,6 +546,45 @@ export function CharacterManager({
     return navigate(() => onPackage(packageOption, formId))
   }
 
+  /**
+   * 清空当前人格的语音配置，并尝试移除不再被任何角色引用的语音包与模型文件。
+   * @returns {Promise<string | null>} 操作完成后的提示文案；失败或被阻断时返回 null。
+   */
+  async function handleDeleteFormVoice() {
+    let feedback = null
+    await perform(async () => {
+      if (dirty) {
+        const flushed = await editor.flush()
+        if (!flushed) return
+      }
+      const latest = await client.characters.get(id)
+      const targetForm = latest?.forms.find((item) => item.id === formId)
+      if (!targetForm) return
+      const previousPackageId = targetForm.voicePackageId ?? null
+      clearReplyVoice(targetForm)
+      const saved = await client.characters.save(latest)
+      select(saved)
+      let removedPackage = false
+      if (previousPackageId) {
+        const preview = await client.setup.previewVoiceRemoval(previousPackageId).catch(() => null)
+        if (preview?.bytes > 0) {
+          await client.setup.removeVoice(previousPackageId)
+          removedPackage = true
+        }
+      }
+      await client.assets.collectUnused({}).catch(() => null)
+      await onRefresh()
+      if (removedPackage) {
+        feedback = '已删除当前人格的语音模型并释放磁盘空间。'
+      } else if (previousPackageId) {
+        feedback = '已清空当前人格的语音配置；原语音包仍被其他角色使用，模型文件已保留。'
+      } else {
+        feedback = '已删除当前人格的语音模型并清理未使用的文件。'
+      }
+    })
+    return feedback
+  }
+
   function handleKeepChange(checked) {
     setKeep(checked === true)
   }
@@ -803,7 +843,12 @@ export function CharacterManager({
                     <h3>角色信息</h3>
                   </div>
                   <div className="role-field">
-                    <Input id={nameInputId} aria-label="角色名称" value={edited.name} onChange={updateName} />
+                    <Input
+                      id={nameInputId}
+                      aria-label="角色名称"
+                      value={edited.name}
+                      onChange={updateName}
+                    />
                   </div>
 
                   {showSelfNameSwitch && (
@@ -1151,6 +1196,7 @@ export function CharacterManager({
                           choose={choose}
                           packageLabel={packageLabel}
                           packageAction={openPackage}
+                          onDeleteVoice={handleDeleteFormVoice}
                         />
                       </>
                     )}
@@ -1186,7 +1232,7 @@ export function CharacterManager({
                           }{' '}
                           个单人对话和{' '}
                           {impact.chats.filter((chat) => chat.mode === 'scripted-dialogue').length}{' '}
-                          个小剧场将无法继续聊天。
+                          个小剧场将受到影响。
                         </p>
                         {impact.chats.length > 0 && (
                           <details>

@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto'
+import { join } from 'node:path'
 import { failure, requireValue } from '../core/support.js'
+import {
+  BackgroundPreviewCache,
+  backgroundPreviewCacheDirectory,
+  previewImageLimit
+} from './preview-cache.js'
 
 const origin = 'https://models.dsakiko.org'
 const png = Buffer.from('89504e470d0a1a0a', 'hex')
@@ -21,12 +27,19 @@ export function imageType(bytes) {
 export class BackgroundSource {
   constructor(
     transport,
-    token = process.env.DSAKIKO_DOWNLOAD_TOKEN || import.meta.env?.DSAKIKO_BUNDLED_DOWNLOAD_TOKEN
+    {
+      cacheRoot,
+      token = process.env.DSAKIKO_DOWNLOAD_TOKEN || import.meta.env?.DSAKIKO_BUNDLED_DOWNLOAD_TOKEN
+    } = {}
   ) {
     this.fetch = transport
     this.token = token
+    this.previewCache = cacheRoot
+      ? new BackgroundPreviewCache(join(cacheRoot, backgroundPreviewCacheDirectory))
+      : null
     this.previews = new Map()
     this.previewBytes = 0
+    this.previewRequests = new Map()
   }
 
   async bytes(path, limit, signal, progress) {
@@ -129,20 +142,38 @@ export class BackgroundSource {
   }
 
   async preview(key) {
-    const cached = this.previews.get(key)
-    if (cached && cached.expires > Date.now()) return cached.url
     const item = await this.item(key)
-    const bytes = await this.bytes(
-      '/' + item.key.replace(prefix, 'images/background-previews/'),
-      4 * 1024 * 1024
-    )
-    requireValue(imageType(bytes) === 'image/png', 'invalid_image', '缩略图格式有误。')
+    const name =
+      createHash('sha256')
+        .update(JSON.stringify([item.key, item.sha256]))
+        .digest('hex') + '.png'
+    const cached = this.previews.get(name)
+    if (cached && cached.expires > Date.now()) return cached.url
+    const pending = this.previewRequests.get(name)
+    if (pending) return pending
+    const request = this.loadPreview(item, name).finally(() => this.previewRequests.delete(name))
+    this.previewRequests.set(name, request)
+    return request
+  }
+
+  async loadPreview(item, name) {
+    const generation = this.previewCache?.generation
+    let bytes = await this.previewCache?.read(name).catch(() => null)
+    if (!bytes || imageType(bytes) !== 'image/png') {
+      bytes = await this.bytes(
+        '/' + item.key.replace(prefix, 'images/background-previews/'),
+        previewImageLimit
+      )
+      requireValue(imageType(bytes) === 'image/png', 'invalid_image', '缩略图格式有误。')
+      // 缓存目录不可写或已满时，本次下载的图片仍可正常显示。
+      await this.previewCache?.write(name, bytes, generation).catch(() => {})
+    }
     const url = 'data:image/png;base64,' + bytes.toString('base64')
-    // 搜索和切页会反复挂载卡片，仅在内存保留近期缩略图，按实际数据量限制占用。
-    const previous = this.previews.get(key)
+    // 搜索和切页会反复挂载卡片，保留近期已编码的结果以减少磁盘读取和重复编码。
+    const previous = this.previews.get(name)
     if (previous) this.previewBytes -= previous.url.length
-    this.previews.delete(key)
-    this.previews.set(key, { url, expires: Date.now() + 6 * 3600000 })
+    this.previews.delete(name)
+    this.previews.set(name, { url, expires: Date.now() + 6 * 3600000 })
     this.previewBytes += url.length
     while (this.previewBytes > 12 * 1024 * 1024) {
       const oldest = this.previews.keys().next().value

@@ -7,6 +7,7 @@ import { Input } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { Tabs, TabList, Tab, TabPanel } from '../../components/ui/segmented-tabs.jsx'
 import { desktopHost } from '../../host/desktop.js'
+import { uiPreferences } from '../../host/ui-preferences.js'
 import { formatBytes } from '../setup/presentation.js'
 import { CharacterAvatar } from './CharacterAvatar.jsx'
 import './outfit-manager.css'
@@ -16,7 +17,7 @@ const catalogSources = { v2: 'bestdori', v3: 'modelscope' }
 
 function savedVersion() {
   try {
-    return localStorage.getItem('sakiko.outfits.version') === 'v3' ? 'v3' : 'v2'
+    return JSON.parse(uiPreferences.getItem('outfitVersion') ?? 'null') === 'v3' ? 'v3' : 'v2'
   } catch {
     return 'v2'
   }
@@ -889,7 +890,7 @@ export function OutfitManager({
   function versionChanged(next) {
     setVersion(next)
     try {
-      localStorage.setItem('sakiko.outfits.version', next)
+      uiPreferences.setItem('outfitVersion', JSON.stringify(next))
     } catch {
       // 存储不可用时，本次打开仍保留选择。
     }

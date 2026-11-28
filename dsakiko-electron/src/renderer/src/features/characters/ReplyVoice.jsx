@@ -1,13 +1,15 @@
 import { useEffect, useId, useState } from 'react'
-import { Play, Square } from 'lucide-react'
+import { Play, Square, Trash2 } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Checkbox } from '../../components/ui/checkbox.jsx'
 import { Textarea } from '../../components/ui/fields.jsx'
 import { SelectField } from '../../components/ui/SelectField.jsx'
 import { catalogTextSaveDelay } from '../../hooks/use-catalog-editor.js'
+import { formatBytes } from '../setup/presentation.js'
 import {
   configuredVoice,
   emotionNames,
+  hasAnyVoiceMaterials,
   missingVoiceMaterials,
   setReplyVoice
 } from '../../../../shared/reply-voice.js'
@@ -195,9 +197,21 @@ function Reference({ value, label, onChange, ...props }) {
 }
 
 /** @param {object} props 当前形态、草稿资源入口及修改回调。 @returns {import('react').ReactElement} 当前形态的语音编辑区域。 */
-export function ReplyVoice({ client, form, changeForm, choose, packageAction, packageLabel }) {
+export function ReplyVoice({
+  client,
+  form,
+  changeForm,
+  choose,
+  packageLabel,
+  packageAction,
+  onDeleteVoice
+}) {
   const enableId = useId()
   const [activeEmotion, setActiveEmotion] = useState(null)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteEstimateBytes, setDeleteEstimateBytes] = useState(null)
+  const [deleteStatus, setDeleteStatus] = useState('')
   const voice = configuredVoice(form) ?? {
     gptWeights: null,
     sovitsWeights: null,
@@ -205,6 +219,7 @@ export function ReplyVoice({ client, form, changeForm, choose, packageAction, pa
     emotions: {}
   }
   const enabled = Boolean(form.voice)
+  const hasVoiceData = hasAnyVoiceMaterials(form)
   const missing = missingVoiceMaterials(voice)
   const emotions = voice.emotions ?? {}
   const emotionEntries = [
@@ -215,6 +230,42 @@ export function ReplyVoice({ client, form, changeForm, choose, packageAction, pa
   ]
   const configuredCount = Object.keys(emotions).length
   const activeReference = activeEmotion ? emotions[activeEmotion] : null
+
+  async function handleRequestDeleteVoice() {
+    setDeleteStatus('')
+    setConfirmDelete(true)
+    setDeleteEstimateBytes(null)
+    const ids = new Set()
+    if (voice.gptWeights?.id) ids.add(voice.gptWeights.id)
+    if (voice.sovitsWeights?.id) ids.add(voice.sovitsWeights.id)
+    if (voice.defaultReference?.audio?.id) ids.add(voice.defaultReference.audio.id)
+    for (const ref of Object.values(emotions)) {
+      if (ref?.audio?.id) ids.add(ref.audio.id)
+    }
+    if (!ids.size) {
+      setDeleteEstimateBytes(0)
+      return
+    }
+    const inspected = await Promise.all(
+      [...ids].map((assetId) => client.assets.inspect({ id: assetId }).catch(() => null))
+    )
+    const totalBytes = inspected.reduce((sum, item) => sum + (item?.sizeBytes ?? 0), 0)
+    setDeleteEstimateBytes(totalBytes)
+  }
+
+  async function handleConfirmDeleteVoice() {
+    if (!onDeleteVoice) return
+    setDeleteBusy(true)
+    setDeleteStatus('')
+    try {
+      const feedback = await onDeleteVoice()
+      setConfirmDelete(false)
+      setActiveEmotion(null)
+      if (feedback) setDeleteStatus(feedback)
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
 
   function write(next, active = enabled, delay) {
     changeForm(
@@ -280,9 +331,9 @@ export function ReplyVoice({ client, form, changeForm, choose, packageAction, pa
     <section className="role-card role-voice-section">
       <div className="role-row">
         <div>
-          <h3>回复语音</h3>
+          <h3>语音合成</h3>
           <p className="role-section-desc">
-            配置 GPT-SoVITS 模型与参考音频后，角色回复可合成语音。
+            配置 GPT-SoVITS 模型与参考音频后，可以为角色合成语音。
           </p>
         </div>
         {packageLabel && (
@@ -298,16 +349,66 @@ export function ReplyVoice({ client, form, changeForm, choose, packageAction, pa
         )}
       </div>
 
-      <div className="role-voice-toggle">
-        <Checkbox
-          id={enableId}
-          aria-label="启用回复语音"
-          checked={enabled}
-          disabled={Boolean(missing.length)}
-          onCheckedChange={handleToggleVoice}
-        />
-        <label htmlFor={enableId}>启用回复语音</label>
+      <div className="role-voice-toggle-row">
+        <div className="role-voice-toggle">
+          <Checkbox
+            id={enableId}
+            aria-label="启用语音合成"
+            checked={enabled}
+            disabled={Boolean(missing.length) || deleteBusy}
+            onCheckedChange={handleToggleVoice}
+          />
+          <label htmlFor={enableId}>启用语音合成</label>
+        </div>
+        {onDeleteVoice && hasVoiceData && !confirmDelete && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="role-danger"
+            disabled={deleteBusy}
+            onClick={() => void handleRequestDeleteVoice()}
+          >
+            <Trash2 size={13} aria-hidden="true" />
+            删除语音模型
+          </Button>
+        )}
       </div>
+
+      {confirmDelete && (
+        <div className="role-voice-confirm" role="group" aria-label="删除">
+          <p>
+            删除后将无法为该角色合成语音。
+            {deleteEstimateBytes > 0 && `预计释放 ${formatBytes(deleteEstimateBytes)} 空间`}
+          </p>
+          <div className="role-voice-confirm-actions">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={deleteBusy}
+              onClick={() => setConfirmDelete(false)}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={deleteBusy}
+              onClick={() => void handleConfirmDeleteVoice()}
+            >
+              {deleteBusy ? '正在删除…' : '删除'}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {deleteStatus && (
+        <p className="role-voice-status" role="status">
+          {deleteStatus}
+        </p>
+      )}
 
       {missing.length > 0 && (
         <p className="role-voice-hint" role="note">
@@ -352,9 +453,7 @@ export function ReplyVoice({ client, form, changeForm, choose, packageAction, pa
             </span>
           </div>
         </div>
-        <p className="role-section-desc">
-          可选配置不同情绪的参考录音。
-        </p>
+        <p className="role-section-desc">可选配置不同情绪的参考录音。</p>
         <div className="role-emotion-pills" role="group" aria-label="情绪参考音频列表">
           {emotionEntries.map(([key, label]) => {
             const configured = Boolean(emotions[key])

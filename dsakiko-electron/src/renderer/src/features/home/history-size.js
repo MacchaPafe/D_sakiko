@@ -1,7 +1,9 @@
-export const HISTORY_SIZE_KEY = 'dsakiko.history-size.v1'
+import { uiPreferences } from '../../host/ui-preferences.js'
+
+export const HISTORY_SIZE_KEY = 'historySize'
 /** @typedef {{width: number, height: number}} HistorySize 记录框偏好，尺寸单位为 CSS 像素。 */
-/** @param {Storage|null} storage 本机偏好。 @returns {HistorySize} 无效偏好退回设计尺寸。 */
-export function readHistorySize(storage = globalThis.localStorage) {
+/** @param {Pick<Storage, 'getItem'>|null} storage 本机偏好。 @returns {HistorySize} 无效偏好退回设计尺寸。 */
+export function readHistorySize(storage = uiPreferences) {
   try {
     const size = JSON.parse(storage?.getItem(HISTORY_SIZE_KEY) ?? 'null')
     if (Number.isFinite(size?.width) && Number.isFinite(size?.height))

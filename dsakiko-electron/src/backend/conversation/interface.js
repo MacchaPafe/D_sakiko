@@ -4,6 +4,7 @@ import { historicalCharacterNames, participantIssue, requireParticipants } from 
 import { pinOutfit } from '../characters/outfit-selection.js'
 import { contextBudget, trimHistory } from '../llm/context-budget.js'
 import { extractAssetReferences } from '../resources/references.js'
+import { reclaimableFileBytes, resourceUsage } from '../storage/disk-usage.js'
 import { configureDeepSeek } from '../llm/deepseek-chat.js'
 import { configureChatGPTSearch } from '../llm/chatgpt-responses.js'
 import { lotteryDurationMs, defaultToolNames } from '../../shared/tool-options.js'
@@ -2886,25 +2887,137 @@ export class Conversations {
   }
 
   /**
-   * 删除指定的对话及其本地存档，并释放相关资源。
+   * 查看单条或整批聊天的预计释放量。聊天间共享的资源只计算一次。
+   * @param {string[]} [ids] 省略时返回全部聊天的单条估算。
+   * @returns {Promise<{chats: object[], estimatedBytes: number}>} 预览及确认时使用的版本。
+   */
+  async previewChatCleanup(ids) {
+    requireValue(
+      ids === undefined || (Array.isArray(ids) && ids.every((id) => typeof id === 'string'))
+    )
+    const wanted = ids && new Set(ids)
+    const entries = (await this.listChats()).filter(({ id }) => !wanted || wanted.has(id))
+    const index = await this.assets.state()
+    const usage = resourceUsage(this.assets, index)
+    const batchAssets = []
+    const batchOwners = new Set()
+    let chatBytes = 0
+    const chats = []
+    for (const entry of entries) {
+      const state = this.states.get(entry.id)
+      const busy = Boolean(
+        state?.active || state?.compressing || state?.persistence.state === 'failed'
+      )
+      const owner = 'chat:' + entry.id
+      const releasing = new Set([owner])
+      if (state) releasing.add(state.resourceOwner)
+      const resources = index.owners[owner] ?? []
+      const bytes = await reclaimableFileBytes(this.store.versionFile(entry)).catch(() => 0)
+      if (!busy) {
+        chatBytes += bytes
+        batchAssets.push(...resources)
+        for (const item of releasing) batchOwners.add(item)
+      }
+      const libraryResources = resources.filter(
+        (assetId) => index.locations[assetId]?.root === 'library'
+      )
+      const appResources = resources.filter(
+        (assetId) => index.locations[assetId]?.root !== 'library'
+      )
+      const audioBytes = busy ? 0 : await usage.estimate(libraryResources, releasing)
+      const dataBytes = busy ? 0 : bytes + (await usage.estimate(appResources, releasing))
+      chats.push({
+        id: entry.id,
+        title: entry.title,
+        characterIds: entry.characterIds,
+        characterNames: entry.characterNames,
+        turnCount: entry.turnCount ?? 0,
+        revision: entry.revision,
+        busy,
+        dataBytes,
+        audioBytes,
+        estimatedBytes: busy ? 0 : dataBytes + audioBytes
+      })
+    }
+    return { chats, estimatedBytes: chatBytes + (await usage.estimate(batchAssets, batchOwners)) }
+  }
+
+  /**
+   * 删除预览中的聊天版本。批量回收放在最后，以便处理同批聊天共享的文件。
+   * @param {{id: string, revision: number}[]} entries 要删除的聊天版本。
+   * @returns {Promise<{deleted: string[], skipped: object[], collection: object | null}>} 单条删除与后续回收结果。
+   */
+  async deleteChats(entries) {
+    requireValue(
+      Array.isArray(entries) &&
+        entries.length > 0 &&
+        entries.every(
+          (item) => item && typeof item.id === 'string' && Number.isSafeInteger(item.revision)
+        )
+    )
+    const deleted = []
+    const skipped = []
+    const resources = []
+    for (const { id, revision } of new Map(entries.map((item) => [item.id, item])).values()) {
+      try {
+        resources.push(...(await this.removeChat(id, revision)))
+        deleted.push(id)
+      } catch (error) {
+        skipped.push({ id, problem: problem(error) })
+      }
+    }
+    const collection = await this.collectDeletedChatResources(resources)
+    return { deleted, skipped, collection }
+  }
+
+  /**
+   * 主页和批量删除共用存档删除与零引用回收。
    * @param {string} chatId 目标对话 ID。
-   * @returns {Promise<void>}
+   * @returns {Promise<object | null>} 文件回收结果。
    */
   async deleteChat(chatId) {
+    return this.collectDeletedChatResources(await this.removeChat(chatId))
+  }
+
+  async collectDeletedChatResources(resources) {
+    if (!resources.length) return null
+    try {
+      const refs = new Map(resources.map((item) => [item.id, item]))
+      return await this.assets.collectUnused({ resources: [...refs.values()] })
+    } catch (error) {
+      this.assets.reportMaintenance(error)
+      return { failed: [{ problem: problem(error) }] }
+    }
+  }
+
+  async removeChat(chatId, revision) {
     return this.queue.run(chatId, async () => {
       const state = await this.state(chatId)
       this.assertIdle(state)
+      requireValue(
+        revision === undefined || state.chat.revision === revision,
+        'revision_conflict',
+        '聊天内容已更新，请重新查看。'
+      )
+      const index = await this.assets.state()
+      const refs = new Set([
+        ...(index.owners['chat:' + chatId] ?? []),
+        ...(index.owners[state.resourceOwner] ?? [])
+      ])
       await this.store.delete(chatId, state.chat.revision)
       state.deleted = true
       state.audioTokens.clear()
       state.group = null
       state.pending = []
-      await this.performance.closeSequence(state.sequenceId)
       this.states.delete(chatId)
+      await this.performance
+        .closeSequence(state.sequenceId)
+        .catch((error) => this.assets.reportMaintenance(error))
       this.interactions?.publish()
       await this.assets.releaseWhenPossible(state.resourceOwner)
       // 本地删除已成功；远端文件清理失败仅记录维护告警，不回滚对话删除结果。
       void this.remoteFiles?.collectUnused().catch((error) => this.assets.reportMaintenance(error))
+      return [...refs].map((id) => ({ id }))
     })
   }
 

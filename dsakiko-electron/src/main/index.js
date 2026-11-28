@@ -15,6 +15,8 @@ import { startHttpServer } from '../server/http-server.js'
 import { SpeechProcess } from './processes/speech-process.js'
 import { createMainWindow } from './windows/main-window.js'
 import { installWindowCloseBehavior, publishWindowVisibility } from './windows/close-behavior.js'
+import { createUiPreferences } from './ui-preferences.js'
+import { resolveApplicationBundlePath, StorageSpace } from './storage-space.js'
 
 let mainWindow = null
 let backend = null
@@ -22,6 +24,7 @@ let transport = null
 let speechProcess = null
 let quitting = false
 let directories
+let uiPreferences
 const instance = installSingleInstance(app, () => mainWindow, publishWindowVisibility)
 
 /** IPC 是宿主权限入口，只信任当前主窗口顶层页面，不能接受子 frame 借用权限。 */
@@ -107,6 +110,15 @@ async function startApplication() {
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL)
     origins.push(new URL(process.env.ELECTRON_RENDERER_URL).origin)
   transport = await startHttpServer(backend, { origins })
+  uiPreferences = createUiPreferences(join(directories.appDataRoot, 'ui-preferences.json'))
+  ipcMain.handle('host:get-ui-preferences', (event) => {
+    checkSender(event)
+    return uiPreferences.get()
+  })
+  ipcMain.handle('host:set-ui-preference', (event, key, value) => {
+    checkSender(event)
+    return uiPreferences.set(key, value)
+  })
   ipcMain.handle('host:backend-connection', (event) => {
     checkSender(event)
     return { baseUrl: transport.baseUrl, token: transport.token }
@@ -278,6 +290,40 @@ async function startApplication() {
     requireValue(page, 'unsupported_provider')
     return shell.openExternal(page)
   })
+  const storage = new StorageSpace({
+    directories,
+    backend,
+    session: mainWindow.webContents.session,
+    applicationBundle: resolveApplicationBundlePath({
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      execPath: process.execPath,
+      resourcesPath: process.resourcesPath,
+      env: process.env
+    })
+  })
+  ipcMain.handle('host:storage-overview', (event) => {
+    checkSender(event)
+    return storage.overview()
+  })
+  ipcMain.handle('host:storage-character-usage', (event) => {
+    checkSender(event)
+    return storage.characterUsage()
+  })
+  ipcMain.handle('host:preview-storage-cleanup', (event) => {
+    checkSender(event)
+    return storage.preview()
+  })
+  ipcMain.handle('host:clean-storage', (event, ids) => {
+    checkSender(event)
+    return storage.clean(ids)
+  })
+  ipcMain.handle('host:open-storage-folder', async (event, id) => {
+    checkSender(event)
+    requireValue(Object.hasOwn(directories, id), 'invalid_data_root')
+    const error = await shell.openPath(directories[id])
+    requireValue(!error, 'folder_unavailable', '无法打开文件夹，请确认该位置可用。')
+  })
   const closeBehavior = installWindowCloseBehavior({
     app,
     window: mainWindow,
@@ -285,7 +331,7 @@ async function startApplication() {
     Menu,
     Tray,
     icon: join(resourcesRoot, 'icon.png'),
-    file: join(directories.appDataRoot, 'window-preferences.json'),
+    settings: backend.settings,
     platform: process.platform,
     isQuitting: () => quitting
   })
@@ -328,6 +374,7 @@ app.on('before-quit', (event) => {
     .catch((error) => console.error('业务收尾失败', error))
     .then(() => speechProcess?.close())
     .then((confirmedPid) => backend?.speech.processStopped?.(confirmedPid))
+    .then(() => uiPreferences?.flush())
     .catch((error) => console.error('退出清理失败', error))
     .finally(() => {
       app.exit(0)

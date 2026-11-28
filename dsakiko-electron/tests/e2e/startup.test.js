@@ -77,12 +77,15 @@ test('完整快照延迟时，Logo 退场已显示上次台词和译文', async 
     const page = await application.firstWindow()
     page.setDefaultTimeout(8000)
     await page.getByRole('main', { name: '数字小祥主页' }).waitFor()
-    await page.addInitScript((id) => {
-      localStorage.setItem(
-        'dsakiko.home.navigation.v1',
-        JSON.stringify({ characterId: 'sakiko', chatId: id, tab: 'single-character' })
-      )
-    }, chatId)
+    await page.evaluate(
+      (id) =>
+        window.dsakikoHost.setUiPreference('navigation', {
+          characterId: 'sakiko',
+          chatId: id,
+          tab: 'single-character'
+        }),
+      chatId
+    )
     let snapshotHeld = false
     await page.routeWebSocket(/\/api\/v1\/events\?/, (socket) => {
       const server = socket.connectToServer()

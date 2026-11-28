@@ -51,7 +51,9 @@ export const API_METHODS = {
     reviewVoiceUpdate: false,
     applyVoiceUpdate: true,
     previewVoiceRemoval: false,
-    removeVoice: true
+    removeVoice: true,
+    previewRuntimeRemoval: false,
+    uninstallRuntime: true
   },
   recognition: { prepare: false, transcribe: false, getState: false, cancel: false },
   conversations: {
@@ -93,6 +95,8 @@ export const API_METHODS = {
     setPresentation: true,
     removeReminder: true,
     deleteChat: true,
+    previewChatCleanup: false,
+    deleteChats: true,
     exportChats: true,
     importChats: true
   },
@@ -154,6 +158,13 @@ export const API_METHODS = {
 /** @typedef {{ code: string, message: string, retryable: boolean }} ApiProblem */
 /**
  * @typedef {object} DesktopHost Electron 专有能力，WebUI 使用自己的授权入口。
+ * @property {() => Promise<Record<string, object | string>>} getUiPreferences 读取本机界面偏好。
+ * @property {(key: string, value: object | string) => Promise<void>} setUiPreference 原子保存一项界面偏好。
+ * @property {() => Promise<object[]>} getStorageOverview 查询应用数据、资源和缓存占用。
+ * @property {() => Promise<Record<string, object>>} getCharacterStorageUsage 查询各角色关联的空间占用与摘要。
+ * @property {() => Promise<object[]>} previewStorageCleanup 预览宿主管理的清理项目。
+ * @property {(ids: string[]) => Promise<object[]>} cleanStorage 清理所选类型并返回单项结果。
+ * @property {(id: string) => Promise<void>} openStorageFolder 打开已配置的存储根目录。
  * @property {() => Promise<{result?:object,problem?:object}>} selectVertexAccount 通过系统选择器导入服务账号到后端草稿。
  * @property {(action:string,id?:string) => Promise<{result?:unknown,problem?:object}>} chatGPTAccount 管理订阅账号，返回公开状态。
  * @property {() => Promise<BackendConnection>} getBackendConnection 获取本次运行的业务连接，不把令牌写入日志或持久 URL。

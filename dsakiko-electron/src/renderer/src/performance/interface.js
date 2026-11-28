@@ -1,4 +1,5 @@
 import { dialogueMarkdown } from '../../../shared/dialogue-markdown.js'
+import { uiPreferences } from '../host/ui-preferences.js'
 /** @typedef {import('./playback-contracts.js').PlaybackOptions} PlaybackOptions */
 /** @typedef {import('../../../shared/contracts/presentation.js').SequenceSnapshot} SequenceSnapshot */
 /** @typedef {import('../../../shared/contracts/presentation.js').GuideProgress} GuideProgress */
@@ -27,7 +28,7 @@ import { dialogueMarkdown } from '../../../shared/dialogue-markdown.js'
  * @property {{code: string, message: string} | null} problem 仅影响本客户端的播放问题。
  * @property {boolean} liveAvailable 回放期间是否已有可恢复的实时快照。
  */
-const PREFERENCES_KEY = 'dsakiko.playback.v1'
+const PREFERENCES_KEY = 'playback'
 
 /** 缺省、损坏或越界偏好统一恢复 100%，不继承其他客户端的音量。 */
 function volume(value) {
@@ -52,14 +53,14 @@ export class Performance {
    * 绑定客户端订阅和本地输出，实例不拥有后端 sequence。
    * @param {object} [options] 本客户端能力。
    * @param {import('../backend/client.js').BackendClient} options.client 业务传输封装。
-   * @param {Storage} [options.storage] 本地偏好存储，默认 localStorage。
+   * @param {Pick<Storage, 'getItem' | 'setItem'>} [options.storage] 当前客户端的偏好存储。
    * @param {EventTarget} [options.events] 接收同源页面偏好变更。
    * @param {() => number} [options.now] 本地毫秒单调时钟。
    * @param {PlaybackOutput | null} [options.output] 无 UI 的音频或模型适配器。
    */
   constructor({
     client,
-    storage = globalThis.localStorage,
+    storage = uiPreferences,
     events = globalThis,
     now = () => performance.now(),
     output = null

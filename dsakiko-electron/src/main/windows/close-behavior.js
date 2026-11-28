@@ -1,4 +1,4 @@
-import { readJson, requireValue, SerialQueue, writeJson } from '../../backend/core/support.js'
+import { requireValue, SerialQueue } from '../../backend/core/support.js'
 
 /** @param {import('electron').BrowserWindow} window 主窗口。 @returns {void} 发布读取到的实际可见状态。 */
 export function publishWindowVisibility(window) {
@@ -18,7 +18,7 @@ export function installWindowCloseBehavior({
   Menu,
   Tray,
   icon,
-  file,
+  settings,
   platform,
   isQuitting
 }) {
@@ -28,14 +28,13 @@ export function installWindowCloseBehavior({
 
   async function getBehavior() {
     requireValue(platform === 'win32', 'unsupported_platform')
-    const { behavior } = (await readJson(file)) ?? {}
-    return ['tray', 'quit'].includes(behavior) ? behavior : null
+    return settings.get('application.windowCloseBehavior')
   }
 
   function saveBehavior(behavior) {
     requireValue(platform === 'win32', 'unsupported_platform')
     requireValue(['tray', 'quit'].includes(behavior), 'invalid_window_close_behavior')
-    return writeJson(file, { behavior }).then(() => behavior)
+    return settings.set('application.windowCloseBehavior', behavior).then(() => behavior)
   }
 
   function restore() {

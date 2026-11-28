@@ -112,6 +112,7 @@
 
 /**
  * @typedef {object} GlobalSettings
+ * @property {{windowCloseBehavior: 'tray' | 'quit' | null}} application 桌面关闭行为，空值表示首次询问。
  * @property {number} revision 原子保存版本，新配置为 0。
  * @property {BuiltinToolSettings} tools 内置工具的全局配置。
  * @property {GenerationOptions} generation 生成默认值；执行前校验必需值完整，不猜连接。
@@ -131,6 +132,7 @@
 /**
  * 批量更新全局设置时传入的部分配置对象。
  * @typedef {object} SettingsUpdate
+ * @property {Partial<GlobalSettings['application']>} [application] 要修改的桌面应用设置。
  * @property {GenerationUpdate} [generation] 要修改的模型生成参数。
  * @property {Partial<SpeechOptions>} [speech] 要修改的语音合成参数。
  * @property {Partial<SpeechStartupSettings>} [speechStartup] 要修改的语音服务启动配置（下次启动语音进程时生效）。

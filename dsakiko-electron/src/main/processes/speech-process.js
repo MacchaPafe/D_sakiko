@@ -1,7 +1,7 @@
 import { processUsesResources } from '../../backend/resources/process.js'
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, rename } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
 import { join, delimiter } from 'node:path'
 import { problemError } from '../../shared/problems.js'
@@ -73,7 +73,14 @@ export class SpeechProcess {
       throw problemError('missing_resources', '请配置 GPT-SoVITS 文件清单。')
     await mkdir(join(this.cacheRoot, 'logs'), { recursive: true })
     const token = randomBytes(32).toString('hex')
-    const log = createWriteStream(join(this.cacheRoot, 'logs', 'speech.log'), { flags: 'a' })
+    const logPath = join(this.cacheRoot, 'logs', 'speech.log')
+    // 上一次进程的日志可独立清理，正在使用的文件仍有稳定路径。
+    try {
+      await rename(logPath, logPath + '.' + Date.now() + '-' + token.slice(0, 8))
+    } catch (error) {
+      if (error.code !== 'ENOENT') console.warn('无法轮转语音日志', error)
+    }
+    const log = createWriteStream(logPath, { flags: 'a' })
     const child = spawn(
       settings.pythonExecutable,
       [
@@ -219,8 +226,10 @@ export class SpeechProcess {
   async restart() {
     await this.starting?.catch(() => {})
     const child = this.child
-    if (!child) return null
     await this.stop()
+    await this.childRelease
+    await Promise.allSettled([...this.resourceCleanups])
+    if (!child) return null
     return this.treeStopped(child) ? child.pid : null
   }
 

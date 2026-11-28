@@ -1,8 +1,9 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, test, vi } from 'vitest'
 import { Backgrounds } from '../../src/backend/backgrounds/interface.js'
+import { BackgroundPreviewCache } from '../../src/backend/backgrounds/preview-cache.js'
 import { MediaAssets } from '../../src/backend/resources/interface.js'
 
 const key = 'images/backgrounds/classroom.png'
@@ -41,6 +42,53 @@ async function fixture(getFile) {
   cleanups.push(() => backgrounds.close())
   return { assets, backgrounds, options }
 }
+
+test('在线目录只下载被请求的缩略图，相同请求合并且重启后仍可复用', async () => {
+  const { backgrounds, options } = await fixture()
+  const directory = path.join(options.cacheRoot, 'background-previews')
+  await backgrounds.catalog()
+  await expect(readdir(directory)).rejects.toMatchObject({ code: 'ENOENT' })
+  const expected = 'data:image/png;base64,' + png.toString('base64')
+  await expect(Promise.all([backgrounds.preview(key), backgrounds.preview(key)])).resolves.toEqual([
+    expected,
+    expected
+  ])
+  expect(options.fetch).toHaveBeenCalledTimes(2)
+  expect(await readdir(directory)).toHaveLength(1)
+  await backgrounds.close()
+
+  const restored = new Backgrounds(options)
+  await restored.initialize()
+  cleanups.push(() => restored.close())
+  await expect(restored.preview(key)).resolves.toBe(expected)
+  expect(options.fetch.mock.calls.slice(2).map(([url]) => new URL(url).pathname)).toEqual([
+    '/api/images'
+  ])
+})
+
+test('并发写入按磁盘容量淘汰最早的缩略图，忽略损坏的缓存', async () => {
+  const { backgrounds, options } = await fixture()
+  const directory = path.join(options.cacheRoot, 'background-previews')
+  await backgrounds.preview(key)
+  const [oldest] = await readdir(directory)
+  const past = new Date('2021-01-01T00:00:00Z')
+  await utimes(path.join(directory, oldest), past, past)
+  const cache = new BackgroundPreviewCache(directory, png.length * 2)
+  const names = ['a', 'b'].map((char) => char.repeat(64) + '.png')
+  await Promise.all(names.map((name) => cache.write(name, png)))
+  expect((await readdir(directory)).sort()).toEqual(names)
+
+  await writeFile(path.join(directory, oldest), '损坏的图片')
+  const restored = new Backgrounds(options)
+  await restored.initialize()
+  cleanups.push(() => restored.close())
+  await expect(restored.preview(key)).resolves.toBe(
+    'data:image/png;base64,' + png.toString('base64')
+  )
+  expect(
+    options.fetch.mock.calls.filter(([url]) => url.includes('/background-previews/'))
+  ).toHaveLength(2)
+})
 
 test('每张在线原图只有一个任务，图库移除后仍由对话持有，最后一个引用释放才回收', async () => {
   const { backgrounds, assets } = await fixture()

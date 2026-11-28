@@ -694,7 +694,7 @@ export function Connections({ client, connections, refresh }) {
         <div className="settings-card settings-empty">
           <Cable size={22} />
           <div>
-            <strong>还没有自有连接</strong>
+            <strong>还没有配置大模型</strong>
             <p>添加连接后，可以为每段对话选择使用的模型。</p>
           </div>
         </div>

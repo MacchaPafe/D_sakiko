@@ -178,7 +178,7 @@ export async function createCoreBackend({
         releaseResources: async () => {}
       })
     : () => setup.acquireRuntime('asr')
-  const backgrounds = new Backgrounds({ appDataRoot, assets, fetch: transport })
+  const backgrounds = new Backgrounds({ appDataRoot, cacheRoot, assets, fetch: transport })
   await assets.initialize()
   await backgrounds.initialize()
   await setup.initialize()
@@ -223,6 +223,8 @@ export async function createCoreBackend({
   }
   setup.runtimeWaiting = (kind) =>
     kind === 'asr' ? recognition.runtimeWaiting : speech.runtimeWaiting
+  setup.withIdleRuntime = (kind, operation) =>
+    (kind === 'asr' ? recognition : speech).withIdleRuntime(operation)
   const agent =
     injectedAgent ??
     new Agent({

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Archive, Cable, Download, Monitor, RefreshCw, RotateCcw, X } from 'lucide-react'
+import { Archive, Cable, Download, HardDrive, Monitor, RefreshCw, RotateCcw, X } from 'lucide-react'
 import { Button } from '../../components/ui/button.jsx'
 import { Slider } from '../../components/ui/slider.jsx'
 import {
@@ -10,12 +10,14 @@ import { desktopHost } from '../../host/desktop.js'
 import { Connections } from './Connections.jsx'
 import { Resources } from './Resources.jsx'
 import { ChatArchive } from '../home/ChatArchive.jsx'
+import { StoragePage } from './StoragePage.jsx'
 import './settings.css'
 
 const sections = [
   { id: 'connections', name: '大模型连接', Icon: Cable },
   { id: 'resources', name: '附加资源下载', Icon: Download },
   { id: 'application', name: '应用', Icon: Monitor },
+  { id: 'storage', name: '存储空间', Icon: HardDrive },
   { id: 'archive', name: '对话导入 / 导出', Icon: Archive }
 ]
 
@@ -359,9 +361,12 @@ export function SettingsPanel({
   setupState,
   onClose,
   onDownload,
-  onShowDownloads
+  onShowDownloads,
+  onStorageDownloads,
+  onManageStoredCharacter
 }) {
   const [section, setSection] = useState(entry.section)
+  const [resourceTarget, setResourceTarget] = useState(entry.target)
   const [menuContainer, setMenuContainer] = useState(null)
   const title = sections.find((item) => item.id === section)?.name
   useEffect(() => {
@@ -369,6 +374,10 @@ export function SettingsPanel({
   }, [section, setup])
   function checkUpdates() {
     void setup.refreshManagedCatalog({ force: true })
+  }
+  function showInstallation(kind) {
+    setResourceTarget(kind)
+    setSection('resources')
   }
   return (
     <div className="settings-layout" ref={setMenuContainer}>
@@ -425,7 +434,7 @@ export function SettingsPanel({
           {section === 'resources' && (
             <Resources
               client={client}
-              target={entry.target}
+              target={resourceTarget}
               onDownload={onDownload}
               setupState={setupState}
               setup={setup}
@@ -434,6 +443,17 @@ export function SettingsPanel({
             />
           )}
           {section === 'application' && <Application settings={state.settings} client={client} />}
+          {section === 'storage' && (
+            <StoragePage
+              client={client}
+              flow={flow}
+              characters={state.characters}
+              setup={setup}
+              onDownloads={onStorageDownloads}
+              onInstall={showInstallation}
+              onManageCharacter={onManageStoredCharacter}
+            />
+          )}
           {section === 'archive' && (
             <ChatArchive
               client={client}

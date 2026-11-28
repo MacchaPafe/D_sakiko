@@ -94,6 +94,11 @@ export class BuiltinResources {
     })
   }
 
+  /** 展开后的模型只在没有预览凭证时可清理，解压与删除使用同一队列。 */
+  withIdleCache(operation) {
+    return this.queue.run('cache', () => (this.previews.size ? null : operation(this.root)))
+  }
+
   async close(initialized) {
     this.closed = true
     if (initialized) await this.clear()

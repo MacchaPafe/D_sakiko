@@ -5,6 +5,13 @@ import { contextBridge, ipcRenderer } from 'electron'
 const host = {
   getBackendConnection: () => ipcRenderer.invoke('host:backend-connection'),
   getRuntimeInfo: () => ipcRenderer.invoke('host:runtime-info'),
+  getUiPreferences: () => ipcRenderer.invoke('host:get-ui-preferences'),
+  setUiPreference: (key, value) => ipcRenderer.invoke('host:set-ui-preference', key, value),
+  getStorageOverview: () => ipcRenderer.invoke('host:storage-overview'),
+  getCharacterStorageUsage: () => ipcRenderer.invoke('host:storage-character-usage'),
+  previewStorageCleanup: () => ipcRenderer.invoke('host:preview-storage-cleanup'),
+  cleanStorage: (ids) => ipcRenderer.invoke('host:clean-storage', ids),
+  openStorageFolder: (id) => ipcRenderer.invoke('host:open-storage-folder', id),
   selectVertexAccount: () => ipcRenderer.invoke('host:select-vertex-account'),
   chatGPTAccount: (action, id) => ipcRenderer.invoke('host:chatgpt-account', action, id),
   openProviderKeyPage: (provider) => ipcRenderer.invoke('host:open-provider-key-page', provider),

@@ -1,5 +1,6 @@
 import { defaultToolNames, webConflict } from '../../../../shared/tool-options.js'
 import { AttachmentDraft } from './attachments.js'
+import { uiPreferences } from '../../host/ui-preferences.js'
 
 /** @typedef {{characterId: string|null, chatId: string|null, tab: 'single-character'|'scripted-dialogue'}} HomeTarget 稳定导航身份，与尚未创建的聊天草稿分离。 */
 /** @typedef {{connectionId: string, modelId: string}} ModelSelection 可持久化的自有模型选择。 */
@@ -24,8 +25,8 @@ import { AttachmentDraft } from './attachments.js'
  * @property {boolean} sending 正在等待本次发送的受理结果。
  * @property {string|null} problem 可展示的命令错误。
  */
-const NAVIGATION_KEY = 'dsakiko.home.navigation.v1'
-const RECENT_MODEL_KEY = 'dsakiko.home.recent-model.v1'
+const NAVIGATION_KEY = 'navigation'
+const RECENT_MODEL_KEY = 'recentModel'
 
 /** @param {HomeTarget} target 导航目标。 @returns {string} 草稿身份，不依赖展示名称。 */
 export function inputKey(target) {
@@ -36,11 +37,8 @@ export function inputKey(target) {
 
 /** 主页业务状态，负责命令身份和迟到结果隔离；不包含 React、模型 SDK 或声音。 */
 export class HomeFlow {
-  /** @param {import('../../backend/client.js').BackendClient} client 应用共享的业务连接。 @param {{storage?: Storage, randomId?: () => string}} options 导航存储和命令身份。 */
-  constructor(
-    client,
-    { storage = globalThis.localStorage, randomId = () => crypto.randomUUID() } = {}
-  ) {
+  /** @param {import('../../backend/client.js').BackendClient} client 应用共享的业务连接。 @param {{storage?: Pick<Storage, 'getItem' | 'setItem'>, randomId?: () => string}} options 导航存储和命令身份。 */
+  constructor(client, { storage = uiPreferences, randomId = () => crypto.randomUUID() } = {}) {
     Object.assign(this, { client, storage, randomId })
     this.listeners = new Set()
     this.inputs = new Map()
@@ -679,19 +677,27 @@ export class HomeFlow {
   }
   deleteChat = async (chat) => {
     try {
-      await this.client.conversations.deleteChat(chat.id)
-      this.inputs.get('chat:' + chat.id)?.attachments.clear()
-      this.inputs.delete('chat:' + chat.id)
-      if (this.tabChats.get(chat.mode) === chat.id) {
-        this.tabChats.set(chat.mode, null)
-      }
-      if (this.state.target.chatId === chat.id) this.select({ ...this.state.target, chatId: null })
-      await this.refresh()
+      const collection = await this.client.conversations.deleteChat(chat.id)
+      await this.applyDeletedChats([chat.id])
+      if (collection?.failed?.length || collection?.aborted)
+        this.update({ problem: '聊天已删除，部分文件未能回收。可在存储空间再次清理。' })
       return true
     } catch (error) {
       this.update({ problem: error.message })
       return false
     }
+  }
+  /** @param {string[]} ids 确认已删除的聊天。清理页面的选择与主页应同步离开这些存档。 */
+  async applyDeletedChats(ids) {
+    const deleted = new Set(ids)
+    for (const id of deleted) {
+      this.inputs.get('chat:' + id)?.attachments.clear()
+      this.inputs.delete('chat:' + id)
+    }
+    for (const [mode, id] of this.tabChats) if (deleted.has(id)) this.tabChats.set(mode, null)
+    if (deleted.has(this.state.target.chatId)) this.select({ ...this.state.target, chatId: null })
+    this.update({ chats: this.state.chats.filter(({ id }) => !deleted.has(id)) })
+    await this.refresh().catch((error) => this.update({ problem: error.message }))
   }
   retrySave = async () => {
     const chatId = this.state.target.chatId
